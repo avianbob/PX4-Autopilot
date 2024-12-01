@@ -46,6 +46,9 @@
 #pragma once
 
 #include "ControlAllocation.hpp"
+#include <uORB/Subscription.hpp>
+
+#include <uORB/topics/failure_flag.h>
 
 class ControlAllocationPseudoInverse: public ControlAllocation
 {
@@ -70,7 +73,11 @@ protected:
 	void updatePseudoInverse();
 
 private:
+	uORB::Subscription failure_flag_sub{ORB_ID(failure_flag)};
+
 	void normalizeControlAllocationMatrix();
 	void updateControlAllocationMatrixScale();
+	void adjustMixForMotorFailure(int failed_motor_index);
+	void resetMixMatrix();
 	bool _normalization_needs_update{false};
 };

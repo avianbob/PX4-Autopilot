@@ -148,7 +148,8 @@ ActuatorEffectivenessRotors::computeEffectivenessMatrix(const Geometry &geometry
 	int num_actuators = 0;
 
 	for (int i = 0; i < geometry.num_rotors; i++) {
-
+			
+		
 		if (i + actuator_start_index >= NUM_ACTUATORS) {
 			break;
 		}

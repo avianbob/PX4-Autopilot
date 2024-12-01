@@ -1,4 +1,4 @@
-/****************************************************************************
+ /****************************************************************************
  *
  *   Copyright (c) 2013-2019 PX4 Development Team. All rights reserved.
  *
@@ -46,8 +46,22 @@
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
 
+
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/actuator_outputs.h>
+#include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
+#include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
+
+#include <uORB/topics/failure_flag.h>
+
 using namespace matrix;
 using namespace time_literals;
+bool fail_change;
+int faillM_indx;
+
+uORB::Subscription _failure_flag_sub{ORB_ID(failure_flag)};
 
 ControlAllocator::ControlAllocator() :
 	ModuleParams(nullptr),
@@ -319,12 +333,12 @@ ControlAllocator::Run()
 		parameter_update_s param_update;
 		_parameter_update_sub.copy(&param_update);
 
-		if (_handled_motor_failure_bitmask == 0) {
+		/*if (_handled_motor_failure_bitmask == 0) {
 			// We don't update the geometry after an actuator failure, as it could lead to unexpected results
 			// (e.g. a user could add/remove motors, such that the bitmask isn't correct anymore)
 			updateParams();
 			parameters_updated();
-		}
+		}*/
 	}
 
 	if (_num_control_allocation == 0 || _actuator_effectiveness == nullptr) {
@@ -402,7 +416,7 @@ ControlAllocator::Run()
 	if (do_update) {
 		_last_run = now;
 
-		check_for_motor_failures();
+
 
 		update_effectiveness_matrix_if_needed(EffectivenessUpdateReason::NO_EXTERNAL_UPDATE);
 
@@ -542,7 +556,7 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 		}
 
 		// Handle failed actuators
-		if (_handled_motor_failure_bitmask) {
+		/*if (_handled_motor_failure_bitmask) {
 			actuator_idx = 0;
 			memset(&actuator_idx_matrix, 0, sizeof(actuator_idx_matrix));
 
@@ -560,7 +574,7 @@ ControlAllocator::update_effectiveness_matrix_if_needed(EffectivenessUpdateReaso
 				++actuator_idx_matrix[selected_matrix];
 				++actuator_idx;
 			}
-		}
+		}*/
 
 		for (int i = 0; i < _num_control_allocation; ++i) {
 			_control_allocation[i]->setActuatorMin(minimum[i]);
@@ -650,6 +664,202 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 	_control_allocator_status_pub[matrix_index].publish(control_allocator_status);
 }
 
+
+
+
+
+
+
+
+
+
+
+void ControlAllocator::updateFailureStatus()
+{
+    failure_flag_s failure_msg;
+
+    // Check if there's a new message
+    if (_failure_flag_sub.update(&failure_msg)) {
+        // Handle the received message
+        if (failure_msg.failure_detected) {
+            PX4_WARN("Failure detected! Failed motor index: %d, Type: %d",
+                     failure_msg.failed_motor_index, failure_msg.failure_type);
+
+            // Perform specific actions based on the failure
+			fail_change=true;
+			faillM_indx=failure_msg.failed_motor_index;
+        }
+    }
+}
+/*
+float sat(float value, float p) {
+    if (fabs(value) > p) {  // If |value| > p
+        return (value > 0 ? 1.0f : -1.0f);  // Return sign(value)
+    } else {  // If |value| <= p
+        return value / p;  // Return scaled value
+    }
+}
+
+int sign(float value) {
+    if (value > 0) return 1;  // Positive
+    if (value < 0) return -1; // Negative
+    return 0;  // Zero
+}
+void calculate_remaining_motor_thrusts(float u_f, float tau_q, float tau_r, float &f2, float &f3, float &f4) {
+    const float l = 0.2f; // Arm length (meters)
+const float d = 0.01f; // Drag coefficient (Nm/rad^2)000175
+    // Define the control allocation matrix (3x3)
+    matrix::Matrix3f control_allocation;
+    control_allocation(0, 0) = 1.0f;  control_allocation(0, 1) = -l;   control_allocation(0, 2) =  d;
+    control_allocation(1, 0) = 1.0f;  control_allocation(1, 1) =  l;   control_allocation(1, 2) =  d;
+    control_allocation(2, 0) = 1.0f;  control_allocation(2, 1) =  0.0f; control_allocation(2, 2) = -d;
+
+    // Input vector [u_f, tau_q, tau_r]
+    matrix::Vector3f control_inputs(u_f, tau_q, tau_r);
+
+    // Solve for motor forces [f2, f3, f4]
+    matrix::Vector3f motor_forces = control_allocation.I() * control_inputs;
+
+    // Assign outputs
+    f2 = motor_forces(0);
+    f3 = motor_forces(1);
+    f4 = motor_forces(2);
+}
+
+
+static orb_advert_t actuator_pub = orb_advertise(ORB_ID(actuator_outputs), nullptr);
+
+
+    	    uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+    	    uORB::SubscriptionData<vehicle_local_position_s> vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+    	    uORB::SubscriptionData<vehicle_angular_velocity_s> vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+            	    vehicle_angular_velocity_s vehicle_angular_velocity;
+		                	    vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity);
+
+			vehicle_attitude_sub.update();
+        		vehicle_local_position_sub.update();
+        		vehicle_angular_velocity_sub.update();
+
+
+
+
+                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
+
+			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
+
+                	float q0 = attitude.q[0]; // w
+    			float q1 = attitude.q[1]; // x
+    			float q2 = attitude.q[2]; // y
+    			float q3 = attitude.q[3]; // z
+
+    			// Convert quaternion to Euler angles
+    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
+    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
+    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
+
+			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
+        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
+
+
+			 // Define desired values (setpoints)
+    			float desired_roll = 0.0f;
+    			float desired_pitch = 0.0f;
+    			float desired_yaw = 0.0f;
+    			float desired_altitude = 45.0f; // Hovering altitude
+
+			// Calculate errors
+    			float roll_error = desired_roll - roll;
+    			float pitch_error = desired_pitch - pitch;
+    			float yaw_error = desired_yaw - yaw;
+    			float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
+
+
+			 // Adaptive gains (proportional to errors)
+    			float k = 1.2f + 0.05f * fabsf(roll_error + pitch_error + yaw_error);
+    			float l = 1.2f + 0.05f * fabsf(altitude_error);
+
+			//float k = 1.2f;
+			//float l = 1.2f;
+
+                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
+                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
+                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - k*(0 - vehicle_angular_velocity.xyz[2]));
+                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
+
+
+            	    	float p = 0.05f; // Set your limit for saturation
+
+
+
+            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
+            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
+            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
+			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
+
+			float u1 = u1_c - k*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
+            	    	float u2 = u2_c - k*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
+            	    	float u3 = u3_c - k*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
+			float u4 = u4_c - k*sat(0 - local_position.vz - l*(45.0f + local_position.z), p); // z_height = -local_position.z
+
+            	    	//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
+		    	//float F2 = 0 * u1 + 1 * u2 + 0 * u3 + 0.25f * u4;
+		    	//float F3 = -0.5f * u1 + 0 * u2 + 0 * u3 + 0.25f * u4;
+		    	//float F4 = 0.5f * u1 + 0 * u2 + 0 * u3 + 0.25f * u4;
+
+			float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
+		    	float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
+		    	float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
+		    	float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
+
+			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
+		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
+		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
+		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
+
+
+
+			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
+        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
+        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
+        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
+
+
+            	        struct actuator_outputs_s actuators = {};
+
+
+			actuators.timestamp = hrt_absolute_time();
+			actuators.noutputs = 4;  // Specify the number of outputs (motors)
+			//actuators.output[0] = F1;  // Motor 1
+			//actuators.output[1] = F2;  // Motor 2
+			//actuators.output[2] = F3;  // Motor 3
+			//actuators.output[3] = F4;  // Motor 4
+
+
+
+			actuator_motors.timestamp = hrt_absolute_time();
+			actuator_motors.control[0] = F1;
+			actuator_motors.control[1] = F2;
+			actuator_motors.control[2] = F4;
+			actuator_motors.control[3] = F3;
+
+
+			orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 void
 ControlAllocator::publish_actuator_controls()
 {
@@ -661,32 +871,199 @@ ControlAllocator::publish_actuator_controls()
 	actuator_motors.timestamp = hrt_absolute_time();
 	actuator_motors.timestamp_sample = _timestamp_sample;
 
-	actuator_servos_s actuator_servos;
+	/*actuator_servos_s actuator_servos;
 	actuator_servos.timestamp = actuator_motors.timestamp;
-	actuator_servos.timestamp_sample = _timestamp_sample;
+	actuator_servos.timestamp_sample = _timestamp_sample;*/
 
 	actuator_motors.reversible_flags = _param_r_rev.get();
 
 	int actuator_idx = 0;
 	int actuator_idx_matrix[ActuatorEffectiveness::MAX_NUM_MATRICES] {};
 
-	uint32_t stopped_motors = _actuator_effectiveness->getStoppedMotors() | _handled_motor_failure_bitmask;
+	//uint32_t stopped_motors = _actuator_effectiveness->getStoppedMotors() | _handled_motor_failure_bitmask;
 
-	// motors
+
+/*******************************************************************************************/
+/**********************************FAULT INJECTION STARTS***********************************/
+/*****************************METHOD 1(COMPLETE FAILURE) STARTS*****************************/
+
+
+	float failure_altitude = 30.0f; // Define your threshold altitude in meters
+	static bool motor_idx_failed = false;
+
+    	vehicle_local_position_s local_pos; // Declare a variable to hold local position data
+
+
+	if (_vehicle_local_position_sub.update(&local_pos)) {
+            if (local_pos.z_valid) { // Check if z is valid
+        	if (!motor_idx_failed && local_pos.z < -failure_altitude) {
+                    motor_idx_failed = true; // Trigger motor failure once
+        	}
+            }
+        }
+
+	updateFailureStatus();
+
+
+
+
+
 	int motors_idx;
 
 	for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
 		int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
 		float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
-		actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
 
-		if (stopped_motors & (1u << motors_idx)) {
-			actuator_motors.control[motors_idx] = NAN;
+
+		if (motor_idx_failed && motors_idx == 3) {
+
+    	            actuator_motors.control[motors_idx] = 0.0f;
+    	        //    actuator_motors.control[motors_idx+1] = 1.0f;
+    	        //    actuator_motors.control[motors_idx+2] = 1.0f;
+    	        //    actuator_motors.control[motors_idx+3] = 1.0f;too
+
+
+
 		}
+		else {
+    actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
 
-		++actuator_idx_matrix[selected_matrix];
+ 		}
+
+      //actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+
+
+
+		//if(fail_change && faillM_indx==motors_idx && local_pos.z > -5.f){
+		//	actuator_motors.control[motors_idx] = 1.f;
+		//	actuator_motors.control[motors_idx+1] = 1.f;
+    	    	//	actuator_motors.control[motors_idx+2] = 1.f;
+    	    	//	actuator_motors.control[motors_idx+3] = 1.f;
+			// actuator_motors.control[motor_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+			// actuator_motors.control[motor_idx+1] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+			// actuator_motors.control[motor_idx+2] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+			// actuator_motors.control[motor_idx+3] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+			//PX4_INFO("trying to regain control");
+		//}
+
+    		++actuator_idx_matrix[selected_matrix];
 		++actuator_idx;
+
+		//if (stopped_motors & (1u << motors_idx)) {
+		//	actuator_motors.control[motors_idx] = NAN;
+		//}
 	}
+
+/******************************METHOD 1(COMPLETE FAILURE) ENDS*****************************/
+
+/******************************METHOD 2(LINEAR FAILURE) STARTS*****************************/
+/*
+float failure_altitude = 45.0f; // Define your threshold altitude in meters
+static bool motor_idx_failed = false;
+static float failure_reduction_factor = 0.745f; // Starts at full power
+const float decay_rate = 0.01f; // Rate at which thrust decays (quadratic decay)
+static float time_since_failure = 0.0f; // Track time since failure triggered
+
+vehicle_local_position_s local_pos; // Declare a variable to hold local position data
+
+if (_vehicle_local_position_sub.update(&local_pos)) {
+    if (local_pos.z_valid) { // Check if z is valid
+        if (!motor_idx_failed && local_pos.z < -failure_altitude) {
+            motor_idx_failed = true; // Trigger motor failure once
+        }
+    }
+}
+
+updateFailureStatus();
+
+int motors_idx;
+
+for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
+    int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+    float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+
+    if (motor_idx_failed && motors_idx == 0) {
+        // Increase time since failure to simulate gradual reduction
+        time_since_failure += 0.02f; // Assuming update is called every 20ms
+
+        // Apply quadratic decay: reduction factor decreases faster initially
+        failure_reduction_factor = 1.0f - (decay_rate * time_since_failure * time_since_failure);
+        if (failure_reduction_factor < 0.0f) {
+            failure_reduction_factor = 0.0f; // Ensure it doesn't go negative
+        }
+
+        actuator_motors.control[motors_idx] = failure_reduction_factor * actuator_sp;
+
+
+
+
+    } else {
+        actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+    }
+
+    ++actuator_idx_matrix[selected_matrix];
+    ++actuator_idx;
+}
+
+*/
+
+
+/******************************METHOD 2(LINEAR FAILURE) ENDS******************************/
+
+/***************************METHOD 3(SINUSOIDAL FAILURE) STARTS***************************/
+/*
+	float failure_altitude = 45.0f; // Define your threshold altitude in meters
+	static bool motor_idx_failed = false;
+	static uint64_t motor_failure_start_time = 0; // Store the time when failure starts
+
+	// Sinusoidal parameters
+	const float BASE_RPM = 1700.0f; // Mean RPM
+	const float AMP_RPM = 300.0f;   // Amplitude
+	const float FREQ_HZ = 1.0f;     // Frequency in Hz (adjustable)
+
+	// Declare a variable to hold local position data
+	vehicle_local_position_s local_pos;
+
+	if (_vehicle_local_position_sub.update(&local_pos)) {
+	    if (local_pos.z_valid) { // Check if z is valid
+	        if (!motor_idx_failed && local_pos.z < -failure_altitude) {
+	            motor_idx_failed = true; // Trigger motor failure once
+	            motor_failure_start_time = hrt_absolute_time(); // Record the current time
+	        }
+	    }
+	}
+	updateFailureStatus();
+	int motors_idx;
+
+	for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_motors_s::NUM_CONTROLS; motors_idx++) {
+	    int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+	    float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+
+	    if (motor_idx_failed && motors_idx == 0) {
+	        // Calculate elapsed time
+	        uint64_t elapsed_time_us = hrt_absolute_time() - motor_failure_start_time;
+	        float elapsed_time_s = elapsed_time_us / 1e6f; // Convert microseconds to seconds
+
+	        // Calculate sinusoidal RPM
+	        float omega = -2.0f * static_cast<float>(M_PI) * FREQ_HZ; // Angular frequency
+	        float sinusoidal_rpm = BASE_RPM + AMP_RPM * sinf(omega * elapsed_time_s);
+
+        // Map sinusoidal RPM to motor thrust value (normalized between 0 and 1)
+	        float normalized_thrust = sinusoidal_rpm / 2000.0f; // Assuming max RPM is 2200
+	        actuator_motors.control[motors_idx] = normalized_thrust;
+	    } else {
+	        actuator_motors.control[motors_idx] = PX4_ISFINITE(actuator_sp) ? actuator_sp : NAN;
+	    }
+
+	    ++actuator_idx_matrix[selected_matrix];
+	    ++actuator_idx;
+	}
+
+*/
+/****************************METHOD 3(SINUSOIDAL FAILURE) ENDS****************************/
+/**********************************FAULT INJECTION ENDS***********************************/
+/*****************************************************************************************/
+
 
 	for (int i = motors_idx; i < actuator_motors_s::NUM_CONTROLS; i++) {
 		actuator_motors.control[i] = NAN;
@@ -694,7 +1071,7 @@ ControlAllocator::publish_actuator_controls()
 
 	_actuator_motors_pub.publish(actuator_motors);
 
-	// servos
+	/*// servos
 	if (_num_actuators[1] > 0) {
 		int servos_idx;
 
@@ -711,10 +1088,17 @@ ControlAllocator::publish_actuator_controls()
 		}
 
 		_actuator_servos_pub.publish(actuator_servos);
-	}
+		const float tolerance = 1e-5f; // Define a small tolerance value
+
+		if (fabs(actuator_motors.control[motors_idx]) < tolerance && motor_idx_failed) {
+
+    		    PX4_INFO("Detected failure for motor %d", motors_idx);
+		}
+
+	}*/
 }
 
-void
+/*void
 ControlAllocator::check_for_motor_failures()
 {
 	failure_detector_status_s failure_detector_status;
@@ -763,7 +1147,7 @@ ControlAllocator::check_for_motor_failures()
 		}
 	}
 }
-
+*/
 int ControlAllocator::task_spawn(int argc, char *argv[])
 {
 	ControlAllocator *instance = new ControlAllocator();
@@ -877,3 +1261,4 @@ int control_allocator_main(int argc, char *argv[])
 {
 	return ControlAllocator::main(argc, argv);
 }
+

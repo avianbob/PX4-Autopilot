@@ -40,6 +40,7 @@
  */
 
 #include "ControlAllocationPseudoInverse.hpp"
+#include <uORB/topics/failure_flag.h>
 
 void
 ControlAllocationPseudoInverse::setEffectivenessMatrix(
@@ -168,14 +169,52 @@ ControlAllocationPseudoInverse::normalizeControlAllocationMatrix()
 	}
 }
 
-void
-ControlAllocationPseudoInverse::allocate()
-{
-	//Compute new gains if needed
-	updatePseudoInverse();
+using matrix::Vector4f;
 
-	_prev_actuator_sp = _actuator_sp;
-
-	// Allocate
-	_actuator_sp = _actuator_trim + _mix * (_control_sp - _control_trim);
+void ControlAllocationPseudoInverse::resetMixMatrix() {
+    // Default allocation matrix
+    _mix(0, 0) = 1.0f;  _mix(0, 1) = -1.0f; _mix(0, 2) = 1.0f;  _mix(0, 3) = -1.0f;
+    _mix(1, 0) = -1.0f; _mix(1, 1) = -1.0f; _mix(1, 2) = 1.0f;  _mix(1, 3) = 1.0f;
+    _mix(2, 0) = 1.0f;  _mix(2, 1) = 1.0f;  _mix(2, 2) = 1.0f;  _mix(2, 3) = 1.0f;
+    _mix(3, 0) = -1.0f; _mix(3, 1) = 1.0f;  _mix(3, 2) = -1.0f; _mix(3, 3) = 1.0f;
 }
+
+void ControlAllocationPseudoInverse::adjustMixForMotorFailure(int failed_motor_index) {
+    // Start with the default matrix
+    resetMixMatrix();
+
+    // Zero out the row corresponding to the failed motor
+    if (failed_motor_index >= 0 && failed_motor_index < 4) {
+        for (int i = 0; i < 4; i++) {
+            _mix(failed_motor_index, i) = 0.0f;
+        }
+    } else {
+        PX4_ERR("Invalid motor index: %d", failed_motor_index);
+    }
+}
+
+void ControlAllocationPseudoInverse::allocate() {
+    // Check for motor failure
+    failure_flag_s failure_flag{};
+    bool motor_failure = failure_flag_sub.update(&failure_flag) && failure_flag.failure_detected;
+
+    if (motor_failure) {
+        PX4_WARN("Motor failure detected, motor: %d", failure_flag.failed_motor_index);
+
+        // Adjust the _mix matrix based on the failed motor
+        adjustMixForMotorFailure(failure_flag.failed_motor_index);
+    } else {
+        // Reset to the default mix if no failure is detected
+        resetMixMatrix();
+    }
+
+    // Compute new gains if needed
+    updatePseudoInverse();
+
+    // Store the previous actuator setpoint
+    _prev_actuator_sp = _actuator_sp;
+
+    // Perform allocation
+    _actuator_sp = _actuator_trim + _mix * (_control_sp - _control_trim);
+}
+

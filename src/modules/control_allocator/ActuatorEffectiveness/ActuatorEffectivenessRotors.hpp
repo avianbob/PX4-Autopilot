@@ -135,6 +135,7 @@ private:
 	const AxisConfiguration _axis_config;
 	const bool _tilt_support; ///< if true, tilt servo assignment params are loaded
 
+
 	struct ParamHandles {
 		param_t position_x;
 		param_t position_y;
