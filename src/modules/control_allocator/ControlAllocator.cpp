@@ -53,11 +53,62 @@
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_local_position.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
+#include <math.h> // For sin and other math functions
+#include <unistd.h> // For usleep
+#include <uORB/topics/failure_flag.h> //declared the custom uORB failure_flag
+#include <uORB/uORB.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
+#include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/actuator_outputs.h>
+#include <uORB/topics/actuator_motors.h>
+#include <px4_platform_common/log.h>
+#include <uORB/topics/vehicle_rates_setpoint.h>
+#include <numeric>
+#include <stdexcept>
+#include <uORB/topics/vehicle_status.h>
+#include <events/events.h>
+#include <uORB/topics/sensor_mag.h>
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/actuator_controls_status.h>
+#include <matrix/math.hpp>
+#include <iostream>
+#include <vector>
+#include <cmath>
 
-#include <uORB/topics/failure_flag.h>
 
+using namespace std;
 using namespace matrix;
 using namespace time_literals;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 bool fail_change;
 int faillM_indx;
 
@@ -477,6 +528,7 @@ ControlAllocator::Run()
 	}
 
 	perf_end(_loop_perf);
+
 }
 
 void
@@ -888,11 +940,24 @@ ControlAllocator::publish_actuator_controls()
 /*****************************METHOD 1(COMPLETE FAILURE) STARTS*****************************/
 
 
-	float failure_altitude = 30.0f; // Define your threshold altitude in meters
+static constexpr float failure_time_seconds = 30.0f; // Define the time in seconds after which motor failure occurs
 	static bool motor_idx_failed = false;
 
-    	vehicle_local_position_s local_pos; // Declare a variable to hold local position data
 
+static uint64_t start_time = 0; // Variable to store the start time
+
+if (start_time == 0) {
+    // Initialize start time on first loop iteration
+    start_time = hrt_absolute_time();
+}
+float elapsed_time = (hrt_absolute_time() - start_time) / 1e6f; // Convert microseconds to seconds
+if (!motor_idx_failed && elapsed_time >= failure_time_seconds) {
+    motor_idx_failed = true; // Trigger motor failure
+    PX4_WARN("Motor failure triggered after %.2f seconds", (double)elapsed_time);
+}
+
+  //  	vehicle_local_position_s local_pos; // Declare a variable to hold local position data
+/*
 
 	if (_vehicle_local_position_sub.update(&local_pos)) {
             if (local_pos.z_valid) { // Check if z is valid
@@ -901,7 +966,7 @@ ControlAllocator::publish_actuator_controls()
         	}
             }
         }
-
+*/
 	updateFailureStatus();
 
 
@@ -915,9 +980,9 @@ ControlAllocator::publish_actuator_controls()
 		float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
 
 
-		if (motor_idx_failed && motors_idx == 3) {
+		if (motor_idx_failed && motors_idx == 0) {
 
-    	            actuator_motors.control[motors_idx] = 0.0f;
+    	            actuator_motors.control[motors_idx] = 0.2f;
     	        //    actuator_motors.control[motors_idx+1] = 1.0f;
     	        //    actuator_motors.control[motors_idx+2] = 1.0f;
     	        //    actuator_motors.control[motors_idx+3] = 1.0f;too
@@ -1012,7 +1077,7 @@ for (motors_idx = 0; motors_idx < _num_actuators[0] && motors_idx < actuator_mot
 
 /***************************METHOD 3(SINUSOIDAL FAILURE) STARTS***************************/
 /*
-	float failure_altitude = 45.0f; // Define your threshold altitude in meters
+	float failure_altitude = 30.0f; // Define your threshold altitude in meters
 	static bool motor_idx_failed = false;
 	static uint64_t motor_failure_start_time = 0; // Store the time when failure starts
 
@@ -1148,6 +1213,7 @@ ControlAllocator::check_for_motor_failures()
 	}
 }
 */
+
 int ControlAllocator::task_spawn(int argc, char *argv[])
 {
 	ControlAllocator *instance = new ControlAllocator();

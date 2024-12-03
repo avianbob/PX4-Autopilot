@@ -92,6 +92,11 @@
 #include <uORB/topics/vehicle_rates_setpoint.h>
 #include <numeric>
 #include <stdexcept>
+#include <uORB/topics/vehicle_status.h>
+#include <events/events.h>
+#include <uORB/topics/sensor_mag.h>
+
+
 
 using namespace std;
 
@@ -861,7 +866,7 @@ for (size_t i = 0; i < 3; ++i) {
 
 
 
-		     /******************************/
+		     /******************************
 		    //static orb_advert_t actuator_pub = orb_advertise(ORB_ID(actuator_outputs), nullptr);
 
                 	while(true){
@@ -931,7 +936,7 @@ for (size_t i = 0; i < 3; ++i) {
 			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
             	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
             	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
-			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(30.0f + local_position.z), p); // z_height = -local_position.z
+			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(20.0f + local_position.z), p); // z_height = -local_position.z
 
             	    	float F1 = 0 * u1 + -0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
             	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
@@ -984,11 +989,11 @@ for (size_t i = 0; i < 3; ++i) {
         		px4_usleep(4); // Sleep for 10ms (adjust as needed)
 			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
 
-			if(local_position.z > 29.8f){
+			if(local_position.z > 17.8f){
 				break;
 			}
 
-			}
+			}*/
 
 
 
@@ -1011,133 +1016,41 @@ for (size_t i = 0; i < 3; ++i) {
 
 
 
-
-
-
-
-
-			while(true){
-			vehicle_attitude_sub.update();
-        		vehicle_local_position_sub.update();
-        		vehicle_angular_velocity_sub.update();
-			PX4_INFO("Loop 2");
-
-
-
-                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
-
+			        		/*vehicle_local_position_sub.update();
 			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
 
-                	float q0 = attitude.q[0]; // w
-    			float q1 = attitude.q[1]; // x
-    			float q2 = attitude.q[2]; // y
-    			float q3 = attitude.q[3]; // z
 
-    			// Convert quaternion to Euler angles
-    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
-    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
-    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
+			// Add these variables in your module class
+static uint64_t start_time = 0;
+    static bool timer_started = false;
 
-			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
-        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
+int vehicle_status_sub = orb_subscribe(ORB_ID(vehicle_status));
+    if (vehicle_status_sub < 0) {
+        PX4_ERR("Failed to subscribe to vehicle_status");
+        return -1;
+    }
 
+    struct vehicle_status_s vehicle_status{};
+    if (orb_copy(ORB_ID(vehicle_status), vehicle_status_sub, &vehicle_status) != PX4_OK) {
+        PX4_ERR("Failed to copy vehicle_status");
+        orb_unsubscribe(vehicle_status_sub);
+        return -1;
+    }
 
-			 // Define desired values (setpoints)
-    			//float desired_roll = 0.0f;
-    			//float desired_pitch = 0.0f;
-    			//float desired_yaw = 0.0f;
-    			//float desired_altitude = 45.0f; // Hovering altitude
+    // Check nav_state for takeoff
+    if (!timer_started && vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF) {
+        start_time = hrt_absolute_time();
+        timer_started = true;
+    }
 
-			// Calculate errors
-    			//float roll_error = desired_roll - roll;
-    			//float pitch_error = desired_pitch - pitch;
-    			//float yaw_error = desired_yaw - yaw;
-    			//float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
+    if (timer_started) {
+        uint64_t elapsed_time = (hrt_absolute_time() - start_time) / 1e6; // Convert to seconds
+        if (elapsed_time >= 18) {
+            PX4_INFO("10 seconds elapsed, running the loop...");
 
-
-			 // Adaptive gains (proportional to errors)
-    			float k = 0.2f + 0.05f;// * fabsf(roll_error + pitch_error + yaw_error);
-    			float l = 0.2f + 0.05f;// * fabsf(altitude_error);
-
-			//float k = 1.2f;
-			//float l = 1.2f;
-
-                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
-                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
-                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - l*(0 - vehicle_angular_velocity.xyz[2]));
-                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
-
-
-            	    	//float p = 0.05f; // Set your limit for saturation
-            	    	float p = 0.2f; // Set your limit for saturation
-
-
-
-            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
-            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
-            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
-			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
-
-			float k1 = 50.0f;
-
-			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
-            	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
-            	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
-			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(30.0f + local_position.z), p); // z_height = -local_position.z
-
-            	    	float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.25f * u4;
-            	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
-
-		    	float F2 = 0 * u1 + 0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
-		    	float F3 = -0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-		    	float F4 = 0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-		    	//float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
-		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
-
-
-
-
-
-			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
-        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
-        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
-        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
-
-
-
-			//actuators.timestamp = hrt_absolute_time();
-			//actuators.noutputs = 4;  // Specify the number of outputs (motors)
-			//actuators.output[0] = F1;  // Motor 1
-			//actuators.output[1] = F2;  // Motor 2
-			//actuators.output[2] = F3;  // Motor 3
-			//actuators.output[3] = F4;  // Motor 4
-			uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
-			actuator_motors_s actuator_motors;
-
-			orb_advert_t actuator_motors_pub = orb_advertise(ORB_ID(actuator_motors), &actuator_motors);
-
-			actuator_motors.timestamp = hrt_absolute_time();
-			actuator_motors.control[0] = F1;
-			actuator_motors.control[1] = F2;
-			actuator_motors.control[2] = F4;
-			actuator_motors.control[3] = F3;
-
-
-			//orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
-        		px4_usleep(4); // Sleep for 10ms (adjust as needed)
-			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
-
-			}
-		    /*****************************/
-
+			 }
+}*/
+		    /****************************/
 
 
 
@@ -1146,6 +1059,28 @@ for (size_t i = 0; i < 3; ++i) {
             	    	if (flag==1) {
                 	faulty_motor(estimated_err);
                 	PX4_INFO("Changed Control Algo");
+			/*int _mag_sub = orb_subscribe(ORB_ID(sensor_mag));
+struct sensor_mag_s mag_data;
+
+if (orb_copy(ORB_ID(sensor_mag), _mag_sub, &mag_data) == PX4_OK) {
+    float x_mag = mag_data.x;
+    float y_mag = mag_data.y;
+    float z_mag = mag_data.z;
+
+//    const float mag_threshold = 1.0f;
+
+    if (fabsf(x_mag) < 0.0f){
+	PX4_WARN("x");
+    }
+
+    if (fabsf(y_mag) < -0.22f){
+    	PX4_WARN("y");
+
+    }
+    if(fabsf(z_mag) < 0.42f) {
+        PX4_WARN("z");
+    }
+}*/
 			//static orb_advert_t actuator_pub = orb_advertise(ORB_ID(actuator_outputs), nullptr);
 
                 	/*while(true){
@@ -1268,11 +1203,166 @@ for (size_t i = 0; i < 3; ++i) {
 			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
 
 			}*/
+			/*while(true){
+vehicle_local_position_sub.update();
+			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
+			vehicle_attitude_sub.update();
+        		vehicle_local_position_sub.update();
+        		vehicle_angular_velocity_sub.update();
+
+
+
+                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
+
+			//const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
+
+                	float q0 = attitude.q[0]; // w
+    			float q1 = attitude.q[1]; // x
+    			float q2 = attitude.q[2]; // y
+    			float q3 = attitude.q[3]; // z
+
+    			// Convert quaternion to Euler angles
+    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
+    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
+    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
+
+			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
+        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
+
+
+			 // Define desired values (setpoints)
+    			//float desired_roll = 0.0f;
+    			//float desired_pitch = 0.0f;
+    			//float desired_yaw = 0.0f;
+    			//float desired_altitude = 45.0f; // Hovering altitude
+
+			// Calculate errors
+    			//float roll_error = desired_roll - roll;
+    			//float pitch_error = desired_pitch - pitch;
+    			//float yaw_error = desired_yaw - yaw;
+    			//float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
+
+
+			 // Adaptive gains (proportional to errors)
+    			float k = 2.0f + 0.05f;// * fabsf(roll_error + pitch_error + yaw_error);
+    			float l = 0.00000002f + 0.05f;// * fabsf(altitude_error);
+
+			//float k = 1.2f;
+			//float l = 1.2f;
+
+                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
+                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
+                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - l*(0 - vehicle_angular_velocity.xyz[2]));
+                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
+
+
+            	    	//float p = 0.05f; // Set your limit for saturation
+            	    	float p = 2.0f; // Set your limit for saturation
+
+
+
+            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
+            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
+            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
+			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
+
+			float k1 = 50.0f;
+
+			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
+            	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
+            	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
+			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(30.0f + local_position.z), p); // z_height = -local_position.z
+
+            	    	float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.25f * u4;
+            	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
+
+		    	float F3 = 0.0f * u1 + 1.0f * u2 + 0.0f * u3 + 0.25f * u4;
+		    	float F2 = -0.2f * u1 + 0 * u2 + -0.0f * u3 + 0.25f * u4;
+		    	float F4 = 0.2f * u1 + 0 * u2 + -0.0f * u3 + 0.25f * u4;
+
+			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
+		    	//float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
+		    	//float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
+		    	//float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
+
+			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
+		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
+		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
+		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
+
+
+
+
+
+			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
+        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
+        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
+        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
+
+
+
+			//actuators.timestamp = hrt_absolute_time();
+			//actuators.noutputs = 4;  // Specify the number of outputs (motors)
+			//actuators.output[0] = F1;  // Motor 1
+			//actuators.output[1] = F2;  // Motor 2
+			//actuators.output[2] = F3;  // Motor 3
+			//actuators.output[3] = F4;  // Motor 4
+			uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
+			actuator_motors_s actuator_motors;
+
+			orb_advert_t actuator_motors_pub = orb_advertise(ORB_ID(actuator_motors), &actuator_motors);
+
+			actuator_motors.timestamp = hrt_absolute_time();
+			actuator_motors.control[0] = F1;
+			actuator_motors.control[1] = F2;
+			actuator_motors.control[2] = F4;
+			actuator_motors.control[3] = F3;
+
+
+			//orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
+        		px4_usleep(4); // Sleep for 10ms (adjust as needed)
+			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
+
+			}*/
 
 			break;
 
 
             	    }
+
+
+
+
+
+/*int _mag_sub = orb_subscribe(ORB_ID(sensor_mag));
+struct sensor_mag_s mag_data;
+
+if (orb_copy(ORB_ID(sensor_mag), _mag_sub, &mag_data) == PX4_OK) {
+    float x_mag = mag_data.x;
+    float y_mag = mag_data.y;
+    float z_mag = mag_data.z;
+
+    const float mag_threshold = 1.0f;
+
+    if (fabsf(x_mag) > mag_threshold || fabsf(y_mag) > mag_threshold || fabsf(z_mag) > mag_threshold) {
+        PX4_WARN("Magnetic field exceeds limits! x=%.2f, y=%.2f, z=%.2f", (double)x_mag, (double)y_mag, (double)z_mag);
+    }
+}
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
