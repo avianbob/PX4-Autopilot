@@ -79,6 +79,7 @@
 #include <cmath>           		// For mathematical functions.
 #include <px4_platform_common/log.h> //Helps for logging
 #include <events/events.h> 			// For PX4-specific event handling.
+#include <uORB/topics/sensor_combined.h> //uORB topics for getting sensor data
 
 /**********************************************************************************************************/
 
