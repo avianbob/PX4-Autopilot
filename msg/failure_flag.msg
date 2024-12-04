@@ -1,4 +1,4 @@
-# failure_flag.msg
+#####################################################custom failure_flag.msg file###################################################################
 
 # Timestamp for the message (px4/uint64_t)
 uint64 timestamp
@@ -11,3 +11,5 @@ uint8 failed_motor_index
 
 # Type of failure (0 = none, 1 = motor, etc.)
 uint8 failure_type
+
+################################################################################################################################################

@@ -40,10 +40,18 @@
  */
 
 #pragma once
-/***********************************************************/
+
+/************Included additional uROB messages**********************/
+
+#include <uORB/topics/actuator_controls_status.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_local_position.h>
+#include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/actuator_outputs.h>
-/***********************************************************/
+#include <uORB/topics/vehicle_rates_setpoint.h>
+#include <uORB/topics/failure_flag.h> //declared the custom uORB failure_flag
+
+/***************************************************************************/
 #include <ActuatorEffectiveness.hpp>
 #include <ActuatorEffectivenessMultirotor.hpp>
 #include <ActuatorEffectivenessStandardVTOL.hpp>
@@ -81,12 +89,6 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
-#include <uORB/Subscription.hpp>
-#include <uORB/topics/vehicle_attitude.h>
-#include <uORB/topics/vehicle_angular_velocity.h>
-#include <uORB/topics/vehicle_attitude.h>
-#include <uORB/topics/vehicle_angular_velocity.h>
-#include <uORB/topics/vehicle_local_position.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
 {
@@ -118,7 +120,7 @@ public:
 	void Run() override;
 
 	bool init();
-	void updateFailureStatus();
+
 private:
 
 	struct ParamHandles {
@@ -144,6 +146,12 @@ private:
 	void check_for_motor_failures();
 
 	void publish_control_allocator_status(int matrix_index);
+
+/*******************Initiallized updateFailureStatus Function******************/
+
+void updateFailureStatus();
+
+/**********************************************************************/
 
 	void publish_actuator_controls();
 
@@ -187,15 +195,15 @@ private:
 	uORB::Subscription _vehicle_torque_setpoint1_sub{ORB_ID(vehicle_torque_setpoint), 1};  /**< vehicle torque setpoint subscription (2. instance) */
 	uORB::Subscription _vehicle_thrust_setpoint1_sub{ORB_ID(vehicle_thrust_setpoint), 1};	 /**< vehicle thrust setpoint subscription (2. instance) */
 
+/*********Subscribed to additional uROB messages**********************/
 
-/***********************************************************/
 	uORB::Subscription _actuator_outputs_sub{ORB_ID(actuator_outputs)}; // Subscription to actuator_controls_0
-	    uORB::SubscriptionData<vehicle_attitude_s> _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	uORB::SubscriptionData<vehicle_attitude_s> _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
     uORB::SubscriptionData<vehicle_angular_velocity_s> _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
     uORB::SubscriptionData<vehicle_local_position_s> _vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+	uORB::Subscription _failure_flag_sub{ORB_ID(failure_flag)};
 
-
-/***********************************************************/
+/*********************************************************************/
 	// Outputs
 	uORB::PublicationMulti<control_allocator_status_s> _control_allocator_status_pub[2] {ORB_ID(control_allocator_status), ORB_ID(control_allocator_status)};
 

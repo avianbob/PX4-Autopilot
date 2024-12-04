@@ -99,7 +99,13 @@ set(msg_files
 	FollowTargetEstimator.msg
 	FollowTargetStatus.msg
 	FuelTankStatus.msg
-	failure_flag.msg
+
+###################################custom msg file named failure_flag.msg is added#############################################
+
+	failure_flag.msg 
+
+##############################################################################################################################
+
 	GeneratorStatus.msg
 	GeofenceResult.msg
 	GeofenceStatus.msg

@@ -30,7 +30,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  ****************************************************************************/
-
+/*NEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW*/
 /**
  * @file Commander.cpp
  *
@@ -39,8 +39,7 @@
  */
 
 #include "Commander.hpp"
-#include <uORB/topics/vehicle_attitude.h>
-#include <mathlib/mathlib.h>  // For quaternion functions
+
 /* commander module headers */
 #include "Arming/ArmAuthorization/ArmAuthorization.h"
 #include "commander_helper.h"
@@ -75,330 +74,231 @@
 #include <uORB/topics/mavlink_log.h>
 #include <uORB/topics/tune_control.h>
 
-#include <uORB/Subscription.hpp>
-#include <uORB/topics/actuator_controls_status.h>
-#include <matrix/math.hpp>
-#include <iostream>
-#include <vector>
-#include <cmath>
+/***************************Additional Header Files Inculded*********************************************/
 
-#include <uORB/topics/failure_flag.h> //declared the custom uORB failure_flag
-#include <uORB/uORB.h>
-#include <uORB/topics/vehicle_angular_velocity.h>
-#include <uORB/topics/vehicle_local_position.h>
-#include <uORB/topics/actuator_outputs.h>
-#include <uORB/topics/actuator_motors.h>
-#include <px4_platform_common/log.h>
-#include <uORB/topics/vehicle_rates_setpoint.h>
-#include <numeric>
-#include <stdexcept>
-#include <uORB/topics/vehicle_status.h>
-#include <events/events.h>
-#include <uORB/topics/sensor_mag.h>
+#include <matrix/math.hpp>		// For advanced matrix operations and linear algebra in PX4.
+#include <cmath>           		// For mathematical functions.
+#include <px4_platform_common/log.h> //Helps for logging
+#include <events/events.h> 			// For PX4-specific event handling.
 
-
+/**********************************************************************************************************/
 
 using namespace std;
+uORB::Publication<failure_flag_s> _failure_flag_pub{ORB_ID(failure_flag)}; //failure_flag msg file publisher
 
+/***************Functions and Mathematical Functions required for Fault Detection************************ */
 
-//logic for triggering falisafe
-// Declare the publisher in your class
-uORB::Publication<failure_flag_s> _failure_flag_pub{ORB_ID(failure_flag)};
+//The CompareResult struct holds error values and a flag, making it easy to return both from a function
+struct CompareResult {
+    double estimated_err[3];
+    int flag;
 
+    // Constructor for initialization
+    CompareResult(double err[3], int f) {
+        for (int i = 0; i < 3; ++i) {
+            estimated_err[i] = err[i];
+        }
+        flag = f;
+    }
+};
 
-/*const matrix::Matrix3f INERTIA_MATRIX = {
-    {0.029125f, 0.0f, 0.0f},
-    {0.0f, 0.029125f, 0.0f},
-    {0.0f, 0.0f, 0.055225f}
-};*/
-
-
-//matrix::Vector3f torque = INERTIA_MATRIX * angular_acceleration;
-vector<double> cross_product(const vector<double> &a, const vector<double> &b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+// Cross Product
+void cross_product(const double a[3], const double b[3], double result[3]) {
+    result[0] = a[1] * b[2] - a[2] * b[1];
+    result[1] = a[2] * b[0] - a[0] * b[2];
+    result[2] = a[0] * b[1] - a[1] * b[0];
 }
 
-vector<double> mat_vec_mult(const vector<vector<double>> &mat, const vector<double> &vec) {
-    vector<double> result(3, 0);
+// Matrix-Vector Multiplication
+void mat_vec_mult(const double mat[3][3], const double vec[3], double result[3]) {
     for (int i = 0; i < 3; ++i) {
+        result[i] = 0;
         for (int j = 0; j < 3; ++j) {
             result[i] += mat[i][j] * vec[j];
         }
     }
-    return result;
 }
 
-vector<double> scalar_vec_mult(double scalar, const vector<double> &vec) {
-    return {scalar * vec[0], scalar * vec[1], scalar * vec[2]};
-}
-
-vector<double> vec_sub(const vector<double> &a, const vector<double> &b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-vector<double> vec_add(const vector<double> &a, const vector<double> &b) {
-    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
-}
-
-vector<vector<double>> diag_mat_inv(const vector<vector<double>> &mat) {
-    vector<vector<double>> inv(3, vector<double>(3, 0));
+// Scalar-Vector Multiplication
+void scalar_vec_mult(double scalar, const double vec[3], double result[3]) {
     for (int i = 0; i < 3; ++i) {
-        inv[i][i] = 1.0 / mat[i][i];
+        result[i] = scalar * vec[i];
     }
-    return inv;
 }
 
-vector<double> predictive_state(const vector<double> &w1, const vector<vector<double>> &I, const vector<double> &tao, double t) {
-    vector<vector<double>> I_inv = diag_mat_inv(I);
-    vector<double> cross_product_res = cross_product(w1, mat_vec_mult(I, w1));
-    vector<double> difference = vec_sub(tao, cross_product_res);
-    vector<double> scaled_result = scalar_vec_mult(t, mat_vec_mult(I_inv, difference));
-    return vec_add(w1, scaled_result);
-}
-
-pair<vector<double>, int> compare(vector<double> &w0, const vector<double> &w1, const vector<vector<double>> &I, const vector<double> &tao, const vector<double> &thresh_error, double t) {
-    vector<double> estimated_err = vec_sub(w0, w1);
-    vector<double> w1p = predictive_state(w1, I, tao, t);
-    w0 = w1p;
-    int flag = 0;
+// Vector Subtraction
+void vec_sub(const double a[3], const double b[3], double result[3]) {
     for (int i = 0; i < 3; ++i) {
-        if (abs(estimated_err[i]) > thresh_error[i]) {
-            flag = 1;
-            break;
+        result[i] = a[i] - b[i];
+    }
+}
+
+// Vector Addition
+void vec_add(const double a[3], const double b[3], double result[3]) {
+    for (int i = 0; i < 3; ++i) {
+        result[i] = a[i] + b[i];
+    }
+}
+
+// Diagonal Matrix Inversion
+void diag_mat_inv(const double mat[3][3], double inv[3][3]) {
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            inv[i][j] = (i == j) ? 1.0 / mat[i][i] : 0.0;
         }
     }
-    return make_pair(estimated_err, flag);
 }
 
-vector<double> get_real_time_torques() {
+// Predictive State Function
+void predictive_state(const double w1[3], const double I[3][3], const double tao[3], double t, double result[3]) {
+    double I_inv[3][3], cross_prod[3], temp[3], scaled_result[3];
+    diag_mat_inv(I, I_inv);
+    mat_vec_mult(I, w1, temp);
+    cross_product(w1, temp, cross_prod);
+    vec_sub(tao, cross_prod, temp);
+    mat_vec_mult(I_inv, temp, temp);
+    scalar_vec_mult(t, temp, scaled_result);
+    vec_add(w1, scaled_result, result);
+}
+
+// Compare Function
+int compare(double w0[3], const double w1[3], const double I[3][3], const double tao[3], const double thresh_error[3], double t, double estimated_err[3]) {
+    double w1p[3];
+    vec_sub(w0, w1, estimated_err);
+    predictive_state(w1, I, tao, t, w1p);
+    for (int i = 0; i < 3; ++i) {
+        w0[i] = w1p[i];
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (std::abs(estimated_err[i]) > thresh_error[i]) {
+            return 1; // Flag indicating an error threshold breach
+        }
+    }
+    return 0; // Flag indicating no error threshold breach
+}
+
+// Constants
+const size_t windowSize = 50; // Fixed window size
+double signalBuffer[3][windowSize] = {{0.0}}; // 3D signal buffer
+size_t bufferIndex[3] = {0, 0, 0}; // Tracks the current index for each axis
+
+CompareResult compare(double w0[3], const double w1[3], const double I[3][3], const double tao[3], const double thresh_error[3], double t) {
+    double estimated_err[3];
+    vec_sub(w0, w1, estimated_err);
+
+    double w1p[3];
+    predictive_state(w1, I, tao, t, w1p);
+
+    for (int i = 0; i < 3; ++i) {
+        w0[i] = w1p[i];
+    }
+
+    // Check if any error exceeds the threshold
+    for (int i = 0; i < 3; ++i) {
+        if (std::abs(estimated_err[i]) > thresh_error[i]) {
+            CompareResult result = {estimated_err, 1}; // Initialize result
+            return result; // Flag set
+        }
+    }
+
+    CompareResult result = {estimated_err, 0}; // Initialize result with no error flag
+    return result; // No error
+}
+
+// Fetch Real-Time Torques
+void get_real_time_torques(double result[3]) {
     uORB::SubscriptionData<actuator_controls_status_s> actuator_controls_status_sub{ORB_ID(actuator_controls_status_0)};
     actuator_controls_status_s actuator_controls_status;
 
-    // Check for updates
     if (actuator_controls_status_sub.update()) {
         actuator_controls_status_sub.copy(&actuator_controls_status);
 
-        // Get control power values
         double roll_power = actuator_controls_status.control_power[0];
         double pitch_power = actuator_controls_status.control_power[1];
         double yaw_power = actuator_controls_status.control_power[2];
 
-        // Map to real torques (adjust based on your drone's parameters)
-        double roll_torque = roll_power * 1.816;  // Replace 1.0 with max roll torque
-        double pitch_torque = pitch_power * 1.816; // Replace 1.0 with max pitch torque
-        double yaw_torque = yaw_power * 72.6;   // Replace 1.0 with max yaw torque
-
-        return {roll_torque, pitch_torque, yaw_torque};
+        result[0] = roll_power * 1.816;  // The value 1.816 represents the maximum torque that the motors can generate around the roll axes
+        result[1] = pitch_power * 1.816; // The value 1.816 represents the maximum torque that the motors can generate around the pitch axes
+        result[2] = yaw_power * 72.6;    // The value 72.6 represents the maximum torque that the motors can generate around the yaw axes
+    } else {
+        // If no update, return zeros
+        result[0] = 0.0;
+        result[1] = 0.0;
+        result[2] = 0.0;
     }
-
-    // If no update, return zeros
-    return {0.0, 0.0, 0.0};
 }
 
-
-
-
-
-
-
-
-
-
-
-const size_t windowSize = 50; // Use size_t to avoid signed-unsigned comparison issues
-vector<vector<double>> signalBuffer(3, vector<double>(0)); // Initialize 3x0 buffer
-
-// Function to fetch data and store 50 samples
-void fetchSignal(const vector<vector<double>>& newSignal) {
-    if (newSignal.size() != 3 || newSignal[0].size() != 1) {
-        throw invalid_argument("Input signal must be a 3x1 matrix.");
-    }
-
+// Fetch Signal Function - Store 50 samples
+void fetchSignal(const double newSignal[3]) {
     for (size_t i = 0; i < 3; ++i) {
-        signalBuffer[i].push_back(newSignal[i][0]);
-
-        // Ensure buffer doesn't exceed window size
-        if (signalBuffer[i].size() > windowSize) {
-            signalBuffer[i].erase(signalBuffer[i].begin());
-        }
+        signalBuffer[i][bufferIndex[i]] = newSignal[i];
+        bufferIndex[i] = (bufferIndex[i] + 1) % windowSize; // Circular buffer
     }
 }
 
-// Function to calculate the moving mean
-vector<double> calculateMovingMean() {
-    vector<double> movingMean(3, 0.0);
+// Calculate Moving Mean Function
+void calculateMovingMean(double movingMean[3]) {
     for (size_t i = 0; i < 3; ++i) {
-        if (signalBuffer[i].size() < windowSize) {
-            throw runtime_error("Insufficient data to calculate moving mean.");
+        double sum = 0.0;
+        for (size_t j = 0; j < windowSize; ++j) {
+            sum += signalBuffer[i][j];
         }
-        movingMean[i] = accumulate(signalBuffer[i].begin(), signalBuffer[i].end(), 0.0) / windowSize;
+        movingMean[i] = sum / windowSize;
     }
-    return movingMean;
 }
 
-// Function to compute the noise standard deviation
-vector<double> computeNoiseSD() {
-    vector<double> movingMean = calculateMovingMean();
-    vector<double> noiseSD(3, 0.0);
-
+// Compute Noise Standard Deviation Function
+void computeNoiseSD(double noiseSD[3]) {
+    double movingMean[3];
+    calculateMovingMean(movingMean);
     for (size_t i = 0; i < 3; ++i) {
         double sumSquared = 0.0;
-        for (size_t j = 0; j < signalBuffer[i].size(); ++j) {
+        for (size_t j = 0; j < windowSize; ++j) {
             double noiseOnly = signalBuffer[i][j] - movingMean[i];
             sumSquared += noiseOnly * noiseOnly;
         }
-        noiseSD[i] = sqrt(sumSquared / (windowSize - 1)); // Standard deviation formula
+        noiseSD[i] = std::sqrt(sumSquared / (windowSize - 1)); // Use std::sqrt explicitly
     }
-
-    return noiseSD;
 }
 
+// Faulty Motor Function - Detects the failed motor number on the basis of instantaneous estimated error sign convention for faulty motor
+void faulty_motor(const double arr[3]) {
+    failure_flag_s failure_msg; // Instance for failsafe_flag
 
-
-/*std::vector<double> movingAverage(const std::vector<double>& signal, int windowSize) {
-    std::vector<double> movMean(signal.size(), 0.0);
-    double sum = 0.0;
-    int halfWindow = windowSize / 2;
-
-    for (size_t i = 0; i < signal.size(); ++i) {
-        sum = 0.0;
-        int count = 0;
-        for (int j = std::max(0, static_cast<int>(i) - halfWindow);
-             j <= std::min(static_cast<int>(signal.size()) - 1, static_cast<int>(i) + halfWindow); ++j) {
-            sum += signal[j];
-            ++count;
-        }
-        movMean[i] = sum / count;
-    }
-    return movMean;
-}
-
-// Function to compute the standard deviation of noise
-std::vector<double> computeNoiseSD(const std::vector<double>& signal, int windowSize) {
-    std::vector<double> noiseSD;
-
-    if (signal.size() < static_cast<std::vector<double>::size_type>(windowSize) || windowSize <= 0) {
-    throw std::invalid_argument("Window size must be positive and less than the signal size.");
-}
-
-
-    // Iterate over the signal in chunks of 'windowSize'
-    for (size_t start = 0; start < signal.size(); start += windowSize) {
-        // Get the window slice
-        size_t end = std::min(start + windowSize, signal.size());
-        std::vector<double> window(signal.begin() + start, signal.begin() + end);
-
-        // Step 1: Calculate the moving average for the window
-        std::vector<double> movMean = movingAverage(window, window.size());
-
-        // Step 2: Subtract the moving average to obtain noise-only signal
-        std::vector<double> noiseOnly(window.size(), 0.0);
-        for (size_t i = 0; i < window.size(); ++i) {
-            noiseOnly[i] = window[i] - movMean[i];
-        }
-
-        // Step 3: Compute the standard deviation of the noise-only signal
-        double mean = std::accumulate(noiseOnly.begin(), noiseOnly.end(), 0.0) / noiseOnly.size();
-        double variance = 0.0;
-        for (const auto& val : noiseOnly) {
-            variance += (val - mean) * (val - mean);
-        }
-        variance /= noiseOnly.size();
-
-        // Store the standard deviation for this window
-        noiseSD.push_back(std::sqrt(variance));
-    }
-
-    return noiseSD;
-}
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-/*************************************************************************************************** */
-
-void faulty_motor(const vector<double> &arr) {
-	failure_flag_s failure_msg; //an instance for failsafe_flag
-
-	// Initialize the failsafe message with default values
+    // Initializes the failsafe messages with default values of No Failure detected
     failure_msg.timestamp = hrt_absolute_time();  // Current time in microseconds
-    failure_msg.failure_detected = false;          // Initially assume no failure
-    failure_msg.failed_motor_index = -1;           // No failure
-    failure_msg.failure_type = 0;                   // Default: no failure
+    failure_msg.failure_detected = false;         // Initially assumes no failure
+    failure_msg.failed_motor_index = -1;          // No failure
+    failure_msg.failure_type = 0;                 // Default: no failure
 
-    if (arr[0] > 0 && arr[1] > 0 && arr[2] < 0) {
-        PX4_WARN("Fault in 3rd motor");
-		failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 2;  // 3rd motor failed
-        failure_msg.failure_type = 1;
-    } else if (arr[0] < 0 && arr[1] > 0 && arr[2] > 0) {
+    if (arr[0] < 0 && arr[1] > 0 && arr[2] > 0) {
         PX4_WARN("Fault in 1st motor");
-		failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 0;  // 1st motor failed
+        failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 0;       // 1st motor failed
+        failure_msg.failure_type = 1; 
+    } else if (arr[0] > 0 && arr[1] < 0 && arr[2] > 0) {
+        PX4_WARN("Fault in 2nd motor");
+        failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 1;       // 2nd motor failed
+        failure_msg.failure_type = 1;
+    } else if (arr[0] > 0 && arr[1] > 0 && arr[2] < 0) {
+        PX4_WARN("Fault in 3rd motor");
+        failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 2;       // 3rd motor failed
         failure_msg.failure_type = 1;
     } else if (arr[0] < 0 && arr[1] < 0 && arr[2] < 0) {
         PX4_WARN("Fault in 4th motor");
-		failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 3;  // 4th motor failed
-        failure_msg.failure_type = 1;
-    } else if (arr[0] > 0 && arr[1] < 0 && arr[2] > 0) {
-        PX4_WARN("Fault in 2nd motor");
-		failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 1;  // 2nd motor failed
+        failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 3;       // 4th motor failed
         failure_msg.failure_type = 1;
     }
-	// if fault detected publish message
-	if (failure_msg.failure_detected) {
+
+    // Message to be published in the failure_flag uORB file after detecting the fault
+    if (failure_msg.failure_detected) {
         _failure_flag_pub.publish(failure_msg);
-        PX4_INFO("Motor failure detected! Published failsafe flag with timestamp: %lu", failure_msg.timestamp);
     }
 }
-/*************************************************************************************************************************************/
-/*
-void faulty_motor(const vector<double> &arr) {
-    if (arr[0] > 0 && arr[1] > 0) {
-        PX4_WARN("Fault in 3rd motor");
-    } else if (arr[0] < 0 && arr[1] > 0) {
-        PX4_WARN("Fault in 1st motor");
-    } else if (arr[0] < 0 && arr[1] < 0) {
-        PX4_WARN("Fault in 4th motor");
-    } else if (arr[0] > 0 && arr[1] < 0) {
-        PX4_WARN("Fault in 2nd motor");
-    }
-}
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/***************************************************************************************************************/
 typedef enum VEHICLE_MODE_FLAG {
 	VEHICLE_MODE_FLAG_CUSTOM_MODE_ENABLED  = 1,   /* 0b00000001 Reserved for future use. | */
 	VEHICLE_MODE_FLAG_TEST_ENABLED         = 2,   /* 0b00000010 system has a test mode enabled. This flag is intended for temporary system tests and should not be used for stable implementations. | */
@@ -555,113 +455,12 @@ static bool broadcast_vehicle_command(const uint32_t cmd, const float param1 = N
 }
 #endif
 
-
-
-float sat(float value, float p) {
-    if (fabs(value) > p) {  // If |value| > p
-        return (value > 0 ? 1.0f : -1.0f);  // Return sign(value)
-    } else {  // If |value| <= p
-        return value / p;  // Return scaled value
-    }
-}
-
-void calculate_remaining_motor_thrusts(float u_f, float tau_q, float tau_r, float &f2, float &f3, float &f4) {
-    const float l = 0.2f; // Arm length (meters)
-const float d = 0.01f; // Drag coefficient (Nm/rad^2)000175
-    // Define the control allocation matrix (3x3)
-    matrix::Matrix3f control_allocation;
-    control_allocation(0, 0) = 1.0f;  control_allocation(0, 1) = -l;   control_allocation(0, 2) =  d;
-    control_allocation(1, 0) = 1.0f;  control_allocation(1, 1) =  l;   control_allocation(1, 2) =  d;
-    control_allocation(2, 0) = 1.0f;  control_allocation(2, 1) =  0.0f; control_allocation(2, 2) = -d;
-
-    // Input vector [u_f, tau_q, tau_r]
-    matrix::Vector3f control_inputs(u_f, tau_q, tau_r);
-
-    // Solve for motor forces [f2, f3, f4]
-    matrix::Vector3f motor_forces = control_allocation.I() * control_inputs;
-
-    // Assign outputs
-    f2 = motor_forces(0);
-    f3 = motor_forces(1);
-    f4 = motor_forces(2);
-}
-
-
-
-
-
-
 int Commander::custom_command(int argc, char *argv[])
 {
 	if (!is_running()) {
 		print_usage("not running");
 		return 1;
 	}
-
-
-
-
-
-
-
-
-
-
-	/*uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
-        vehicle_attitude_s vehicle_attitude;
-
-        if (vehicle_attitude_sub.update()) {
-            vehicle_attitude_sub.copy(&vehicle_attitude);
-            PX4_INFO("sdfgfwqerggt");
-            // Convert quaternion to Euler angles (yaw, pitch, roll)
-            float q[4] = {vehicle_attitude.q[0], vehicle_attitude.q[1], vehicle_attitude.q[2], vehicle_attitude.q[3]};
-            float yaw = atan2(2.0f * (q[0] * q[1] + q[2] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]));
-            float pitch = asin(2.0f * (q[0] * q[2] - q[3] * q[1]));
-            float roll = atan2(2.0f * (q[0] * q[3] + q[1] * q[2]), 1.0f - 2.0f * (q[2] * q[2] + q[3] * q[3]));
-
-            // Convert radians to degrees
-            yaw = math::degrees(yaw);
-            pitch = math::degrees(pitch);
-            roll = math::degrees(roll);
-
-            // Define thresholds
-            const float YAW_THRESHOLD = 45.0f;   // example threshold in degrees
-            const float PITCH_THRESHOLD = 30.0f; // example threshold in degrees
-            const float ROLL_THRESHOLD = 30.0f;  // example threshold in degrees
-
-
-            if (fabs(yaw) > YAW_THRESHOLD) {
-                PX4_WARN("Yaw angle exceeded threshold: %.2f degrees", static_cast<double>(yaw));
-            }
-
-            if (fabs(pitch) > PITCH_THRESHOLD) {
-                PX4_WARN("Pitch angle exceeded threshold: %.2f degrees", static_cast<double>(pitch));
-            }
-
-            if (fabs(roll) > ROLL_THRESHOLD) {
-                PX4_WARN("Roll angle exceeded threshold: %.2f degrees", static_cast<double>(roll));
-            }
-        }*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #ifndef CONSTRAINED_FLASH
 
@@ -758,21 +557,8 @@ int Commander::custom_command(int argc, char *argv[])
 		return 0;
 	}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 	if (!strcmp(argv[0], "takeoff")) {
-    // Switch to takeoff mode and arm
+    // switch to takeoff mode and arm
     	    uORB::SubscriptionData<vehicle_command_ack_s> vehicle_command_ack_sub{ORB_ID(vehicle_command_ack)};
     	    send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_TAKEOFF);
 
@@ -782,744 +568,82 @@ int Commander::custom_command(int argc, char *argv[])
                              	    0.f);
     	    }
 
-    	    uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
-    	    uORB::SubscriptionData<vehicle_angular_velocity_s> vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
-    	    uORB::SubscriptionData<vehicle_local_position_s> vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
-
-
-    	    /*const float PITCH_THRESHOLD = 90.0f;
-    	    const float YAW_THRESHOLD = 180.0f;
-    	    const float ROLL_THRESHOLD = 145.0f;*/
-
-	    vector<double> w0 = {0, 0, 0}; // Initialize predictive state
-            vector<vector<double>> I = {
-    		{0.029125, 0, 0}, {0, 0.029125, 0}, {0, 0, 0.055225}
-	    };
-	    vector<double> thres_err = {0.5, 0.5, 1.0}; // Threshold errors
-
-
-
-	    //int windowSize = 10;
-
-
-
-
-	    double t = 0.005;
-
-    	    while (true) {
-        	if (vehicle_attitude_sub.update() && vehicle_angular_velocity_sub.update()) {
-            	    vehicle_attitude_s vehicle_attitude;
-            	    vehicle_angular_velocity_s vehicle_angular_velocity;
-
-            	    vehicle_attitude_sub.copy(&vehicle_attitude);
-            	    vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity);
-                    vector<double> tao = get_real_time_torques();
-
-		    vector<double> w1 = {
-                    	vehicle_angular_velocity.xyz[0],
-                    	vehicle_angular_velocity.xyz[1],
-                    	vehicle_angular_velocity.xyz[2]
-                    };
-
-
-
-
-int t1;
-		 for (t1 = 0; t < 100; ++t) {
-        vector<vector<double>> newSignal = {
-            {sin(0.1 * t1)}, // Simulate 3x1 signal
-            {sin(0.2 * t1)},
-            {sin(0.3 * t1)}
-        };
-
-        // Fetch signal
-        fetchSignal(newSignal);
-
-        // Compute noise SD once we have enough data
-        if (t1 >= 49) {
-            try {
-                vector<double> sigma = computeNoiseSD();
-                //cout << "Noise SD at time " << t << ": ";
-                //for (double sd : noiseSD) {
-               //     cout << sd << " ";
-                //}
-                //cout << endl;
-//std::vector<double> thres_err(3); // Initialize with size 3
-std::vector<double> alpha = {0.02, 0.02, 0.04};
-std::vector<double> beta = {0.8, 0.8, 1.6};
-
-for (size_t i = 0; i < 3; ++i) {
-    thres_err[i] = alpha[i] * sigma[i] + beta[i];
-}
-            } catch (const exception& e) {
-                cerr << e.what() << endl;
-            }
-        }
-    }
-
-
-
-                    pair<vector<double>, int> result = compare(w0, w1, I, tao, thres_err, t);
-		    //PX4_INFO("asdf");
-            	    vector<double> estimated_err = result.first;
-            	    int flag = result.second;
-
-
-
-		     /******************************
-		    //static orb_advert_t actuator_pub = orb_advertise(ORB_ID(actuator_outputs), nullptr);
-
-                	while(true){
-			vehicle_attitude_sub.update();
-        		vehicle_local_position_sub.update();
-        		vehicle_angular_velocity_sub.update();
-
-			//PX4_INFO("Loop 1");
-
-
-                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
-
-			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
-
-                	float q0 = attitude.q[0]; // w
-    			float q1 = attitude.q[1]; // x
-    			float q2 = attitude.q[2]; // y
-    			float q3 = attitude.q[3]; // z
-
-    			// Convert quaternion to Euler angles
-    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
-    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
-    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
-
-			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
-        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
-
-
-			 // Define desired values (setpoints)
-    			//float desired_roll = 0.0f;
-    			//float desired_pitch = 0.0f;
-    			//float desired_yaw = 0.0f;
-    			//float desired_altitude = 45.0f; // Hovering altitude
-
-			// Calculate errors
-    			//float roll_error = desired_roll - roll;
-    			//float pitch_error = desired_pitch - pitch;
-    			//float yaw_error = desired_yaw - yaw;
-    			//float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
-
-
-			 // Adaptive gains (proportional to errors)
-    			float k = 0.2f + 0.05f;// * fabsf(roll_error + pitch_error + yaw_error);
-    			float l = 0.2f + 0.05f;// * fabsf(altitude_error);
-
-			//float k = 1.2f;
-			//float l = 1.2f;
-
-                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
-                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
-                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - l*(0 - vehicle_angular_velocity.xyz[2]));
-                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
-
-
-            	    	//float p = 0.05f; // Set your limit for saturation
-            	    	float p = 0.2f; // Set your limit for saturation
-
-
-
-            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
-            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
-            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
-			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
-
-			float k1 = 100.0f;
-
-			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
-            	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
-            	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
-			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(20.0f + local_position.z), p); // z_height = -local_position.z
-
-            	    	float F1 = 0 * u1 + -0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
-            	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
-
-		    	float F2 = 0 * u1 + 0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
-		    	float F3 = -0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-		    	float F4 = 0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-		    	//float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
-		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
-
-
-
-
-
-			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
-        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
-        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
-        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
-
-
-
-			//actuator_outputs_s actuators;
-			//actuators.timestamp = hrt_absolute_time(); // Assign the timestamp
-			//actuators.noutputs = 4;  // Specify the number of outputs (motors)
-			//actuators.output[0] = F1;  // Motor 1
-			//actuators.output[1] = F2;  // Motor 2
-			//actuators.output[2] = F3;  // Motor 3
-			//actuators.output[3] = F4;  // Motor 4
-			uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
-			actuator_motors_s actuator_motors;
-
-			orb_advert_t actuator_motors_pub = orb_advertise(ORB_ID(actuator_motors), &actuator_motors);
-
-			actuator_motors.timestamp = hrt_absolute_time();
-			actuator_motors.control[0] = F1;
-			actuator_motors.control[1] = F2;
-			actuator_motors.control[2] = F4;
-			actuator_motors.control[3] = F3;
-
-
-			//orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
-        		px4_usleep(4); // Sleep for 10ms (adjust as needed)
-			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
-
-			if(local_position.z > 17.8f){
-				break;
-			}
+/*******************************************Code for Motor Failure Detection Starts**********************************************************/
+
+			// Subscribing to the uORB files of interest
+			/*uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+			uORB::SubscriptionData<vehicle_angular_velocity_s> vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+			uORB::SubscriptionData<vehicle_local_position_s> vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+
+			double w0[3] = {0.0, 0.0, 0.0}; // Initial predictive state of roll, pitch, and yaw
+			// Inertia matrix of IRIS drone (from the model file)
+			double I[3][3] = {
+				{0.029125, 0.0, 0.0}, 
+				{0.0, 0.029125, 0.0}, 
+				{0.0, 0.0, 0.055225}
+			};
+			double thres_err[3] = {0.5, 0.5, 1.0}; // Base threshold errors
+			double t = 0.005; // Sampling time of IMU
+
+   	    	while (true) {
+       			if (vehicle_attitude_sub.update() && vehicle_angular_velocity_sub.update()) {
+           	    	vehicle_attitude_s vehicle_attitude;
+           	    	vehicle_angular_velocity_s vehicle_angular_velocity;
+           	    	vehicle_attitude_sub.copy(&vehicle_attitude);
+           	    	vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity);
+                   
+					double tao[3];
+
+					get_real_time_torques(tao); // Assuming `get_real_time_torques` is adapted to populate raw arrays
+
+					double w1[3] = {
+						vehicle_angular_velocity.xyz[0],
+						vehicle_angular_velocity.xyz[1],
+						vehicle_angular_velocity.xyz[2]
+					};
+
+	 				for (int t1 = 0; t1 < 100; ++t1) {
+						double newSignal[3][1] = {
+							{std::sin(0.1 * t1)}, // Simulating 3x1 signal
+							{std::sin(0.2 * t1)},
+							{std::sin(0.3 * t1)}
+       					};
+
+			 			// Fetching signal
+       					double flattenedSignal[3];
+						for (int i = 0; i < 3; ++i) {
+						flattenedSignal[i] = newSignal[i][0];
+						}
+
+						fetchSignal(flattenedSignal); // Adapt `fetchSignal` to accept raw arrays
+
+       					// Compute noise standard deviation once we have enough data which is n-1, where n is the window size
+       					if (t1 >= 49) {
+           					double sigma[3];
+							computeNoiseSD(sigma);  // Call without assigning return value
+							double alpha[3] = {0.2, 0.2, 0.4}; // Sensitivity factor
+							for (size_t i = 0; i < 3; ++i) {
+								thres_err[i] = alpha[i] * sigma[i] + thres_err[i]; // Calculating dynamic threshold error
+							}
+						}
+					}
+
+					CompareResult result = compare(w0, w1, I, tao, thres_err, t); // Adapt `compare` for raw arrays
+					double* estimated_err = result.estimated_err;
+					int flag = result.flag;
+
+					if (flag == 1) {
+							faulty_motor(estimated_err); // Detects and sends the failure detected message to find the failed motor
+							break;
+					}
+				}
+			
+			usleep(100000); // 100 ms delay
 
 			}*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-			        		/*vehicle_local_position_sub.update();
-			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
-
-
-			// Add these variables in your module class
-static uint64_t start_time = 0;
-    static bool timer_started = false;
-
-int vehicle_status_sub = orb_subscribe(ORB_ID(vehicle_status));
-    if (vehicle_status_sub < 0) {
-        PX4_ERR("Failed to subscribe to vehicle_status");
-        return -1;
-    }
-
-    struct vehicle_status_s vehicle_status{};
-    if (orb_copy(ORB_ID(vehicle_status), vehicle_status_sub, &vehicle_status) != PX4_OK) {
-        PX4_ERR("Failed to copy vehicle_status");
-        orb_unsubscribe(vehicle_status_sub);
-        return -1;
-    }
-
-    // Check nav_state for takeoff
-    if (!timer_started && vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_AUTO_TAKEOFF) {
-        start_time = hrt_absolute_time();
-        timer_started = true;
-    }
-
-    if (timer_started) {
-        uint64_t elapsed_time = (hrt_absolute_time() - start_time) / 1e6; // Convert to seconds
-        if (elapsed_time >= 18) {
-            PX4_INFO("10 seconds elapsed, running the loop...");
-
-			 }
-}*/
-		    /****************************/
-
-
-
-
-
-            	    	if (flag==1) {
-                	faulty_motor(estimated_err);
-                	PX4_INFO("Changed Control Algo");
-			/*int _mag_sub = orb_subscribe(ORB_ID(sensor_mag));
-struct sensor_mag_s mag_data;
-
-if (orb_copy(ORB_ID(sensor_mag), _mag_sub, &mag_data) == PX4_OK) {
-    float x_mag = mag_data.x;
-    float y_mag = mag_data.y;
-    float z_mag = mag_data.z;
-
-//    const float mag_threshold = 1.0f;
-
-    if (fabsf(x_mag) < 0.0f){
-	PX4_WARN("x");
-    }
-
-    if (fabsf(y_mag) < -0.22f){
-    	PX4_WARN("y");
-
-    }
-    if(fabsf(z_mag) < 0.42f) {
-        PX4_WARN("z");
-    }
-}*/
-			//static orb_advert_t actuator_pub = orb_advertise(ORB_ID(actuator_outputs), nullptr);
-
-                	/*while(true){
-			vehicle_attitude_sub.update();
-        		vehicle_local_position_sub.update();
-        		vehicle_angular_velocity_sub.update();
-
-
-
-
-                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
-
-			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
-
-                	float q0 = attitude.q[0]; // w
-    			float q1 = attitude.q[1]; // x
-    			float q2 = attitude.q[2]; // y
-    			float q3 = attitude.q[3]; // z
-
-    			// Convert quaternion to Euler angles
-    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
-    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
-    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
-
-			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
-        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
-
-
-			 // Define desired values (setpoints)
-    			//float desired_roll = 0.0f;
-    			//float desired_pitch = 0.0f;
-    			//float desired_yaw = 0.0f;
-    			//float desired_altitude = 45.0f; // Hovering altitude
-
-			// Calculate errors
-    			//float roll_error = desired_roll - roll;
-    			//float pitch_error = desired_pitch - pitch;
-    			//float yaw_error = desired_yaw - yaw;
-    			//float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
-
-
-			 // Adaptive gains (proportional to errors)
-    			float k = 0.2f + 0.05f;// * fabsf(roll_error + pitch_error + yaw_error);
-    			float l = 0.2f + 0.05f;// * fabsf(altitude_error);
-
-			//float k = 1.2f;
-			//float l = 1.2f;
-
-                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
-                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
-                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - l*(0 - vehicle_angular_velocity.xyz[2]));
-                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
-
-
-            	    	//float p = 0.05f; // Set your limit for saturation
-            	    	float p = 0.2f; // Set your limit for saturation
-
-
-
-            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
-            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
-            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
-			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
-
-			float k1 = 50.0f;
-
-			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
-            	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
-            	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
-			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(30.0f + local_position.z), p); // z_height = -local_position.z
-
-            	    	float F1 = 0 * u1 + -0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
-            	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
-
-		    	float F2 = 0 * u1 + 0.5f * u2 + 0.00834f * u3 + 0.25f * u4;
-		    	float F3 = -0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-		    	float F4 = 0.5f * u1 + 0 * u2 + -0.00834f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-		    	//float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
-		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
-
-
-
-			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
-        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
-        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
-        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
-
-
-            	        struct actuator_outputs_s actuators = {};
-
-
-			actuators.timestamp = hrt_absolute_time();
-			actuators.noutputs = 4;  // Specify the number of outputs (motors)
-			//actuators.output[0] = F1;  // Motor 1
-			//actuators.output[1] = F2;  // Motor 2
-			//actuators.output[2] = F3;  // Motor 3
-			//actuators.output[3] = F4;  // Motor 4
-			uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
-			actuator_motors_s actuator_motors;
-
-			orb_advert_t actuator_motors_pub = orb_advertise(ORB_ID(actuator_motors), &actuator_motors);
-
-			actuator_motors.timestamp = hrt_absolute_time();
-			actuator_motors.control[0] = F1;
-			actuator_motors.control[1] = F2;
-			actuator_motors.control[2] = F4;
-			actuator_motors.control[3] = F3;
-
-
-			orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
-        		px4_usleep(4); // Sleep for 10ms (adjust as needed)
-			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
-
-			}*/
-			/*while(true){
-vehicle_local_position_sub.update();
-			const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
-			vehicle_attitude_sub.update();
-        		vehicle_local_position_sub.update();
-        		vehicle_angular_velocity_sub.update();
-
-
-
-                	const vehicle_attitude_s &attitude = vehicle_attitude_sub.get();
-
-			//const vehicle_local_position_s &local_position = vehicle_local_position_sub.get();
-
-                	float q0 = attitude.q[0]; // w
-    			float q1 = attitude.q[1]; // x
-    			float q2 = attitude.q[2]; // y
-    			float q3 = attitude.q[3]; // z
-
-    			// Convert quaternion to Euler angles
-    			float roll = atan2f(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
-    			float pitch = asinf(2.0f * (q0 * q2 - q3 * q1));
-    			float yaw = atan2f(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
-
-			roll = fmaxf(fminf(roll, M_PI_2), -M_PI_2);
-        		pitch = fmaxf(fminf(pitch, M_PI_2), -M_PI_2);
-
-
-			 // Define desired values (setpoints)
-    			//float desired_roll = 0.0f;
-    			//float desired_pitch = 0.0f;
-    			//float desired_yaw = 0.0f;
-    			//float desired_altitude = 45.0f; // Hovering altitude
-
-			// Calculate errors
-    			//float roll_error = desired_roll - roll;
-    			//float pitch_error = desired_pitch - pitch;
-    			//float yaw_error = desired_yaw - yaw;
-    			//float altitude_error = desired_altitude + local_position.z; // Note: local_position.z is negative for altitude
-
-
-			 // Adaptive gains (proportional to errors)
-    			float k = 2.0f + 0.05f;// * fabsf(roll_error + pitch_error + yaw_error);
-    			float l = 0.00000002f + 0.05f;// * fabsf(altitude_error);
-
-			//float k = 1.2f;
-			//float l = 1.2f;
-
-                	float u1_c=0.129444f*((vehicle_angular_velocity.xyz[1]*vehicle_angular_velocity.xyz[2]*0.896137f) + k*vehicle_angular_velocity.xyz[0] + 0 - l*(0 - vehicle_angular_velocity.xyz[0]));
-                	float u2_c=5.129444f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[2]*-0.896137f) + k*vehicle_angular_velocity.xyz[1] + 0 - l*(0 - vehicle_angular_velocity.xyz[1]));
-                	float u3_c=0.055225f*((vehicle_angular_velocity.xyz[0]*vehicle_angular_velocity.xyz[1]*0.0f) + k*vehicle_angular_velocity.xyz[2] + 0 - l*(0 - vehicle_angular_velocity.xyz[2]));
-                	float u4_c=((1.5f/(cos(roll)*cos(pitch)))*(9.81f + k*local_position.vz + 0 - l*(0 - local_position.vz)));
-
-
-            	    	//float p = 0.05f; // Set your limit for saturation
-            	    	float p = 2.0f; // Set your limit for saturation
-
-
-
-            	    	//float u1 = u1_c - 1*sat(0 - vehicle_angular_velocity.xyz[0] + 1*(0 - roll), p);
-            	    	//float u2 = u2_c - 1*sat(0 - vehicle_angular_velocity.xyz[1] + 1*(0 - pitch), p);
-            	    	//float u3 = u3_c - 1*sat(0 - vehicle_angular_velocity.xyz[2] + 1*(0 - yaw), p);
-			//float u4 = u4_c - 1 * sat(0 - local_position.vz + 1 * (45.0f + local_position.z), p); // z_height = -local_position.z
-
-			float k1 = 50.0f;
-
-			float u1 = u1_c - k1*sat(0 - vehicle_angular_velocity.xyz[0] - l*(0 - roll), p);
-            	    	float u2 = u2_c - k1*sat(0 - vehicle_angular_velocity.xyz[1] - l*(0 - pitch), p);
-            	    	float u3 = u3_c - k1*sat(0 - vehicle_angular_velocity.xyz[2] - l*(0 - yaw), p);
-			float u4 = u4_c - k1*sat(0 - local_position.vz - l*(30.0f + local_position.z), p); // z_height = -local_position.z
-
-            	    	float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.25f * u4;
-            	    	//float F1 = 0 * u1 + -0.0f * u2 + 0.0f * u3 + 0.0f * u4;
-
-		    	float F3 = 0.0f * u1 + 1.0f * u2 + 0.0f * u3 + 0.25f * u4;
-		    	float F2 = -0.2f * u1 + 0 * u2 + -0.0f * u3 + 0.25f * u4;
-		    	float F4 = 0.2f * u1 + 0 * u2 + -0.0f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-		    	//float F3 = 0.0f * u1 + 0.5f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = -0.5f * u1 + 0 * u2 + 0.5f * u3 + 0.25f * u4;
-
-			//float F1 = 0 * u1 + 0 * u2 + 0 * u3 + 0 * u4;
-		    	//float F2 = 1.0f * u1 + 0 * u2 + 1.0f * u3 + 0.25f * u4;
-		    	//float F3 = 0.5f * u1 + 1.0f * u2 + 0 * u3 + 0.25f * u4;
-		    	//float F4 = 0.5f * u1 - 1.0f * u2 + 0 * u3 + 0.25f * u4;
-
-
-
-
-
-			F1 = fminf(fmaxf(F1, 0.0f), 1.0f);
-        		F2 = fminf(fmaxf(F2, 0.0f), 1.0f);
-        		F3 = fminf(fmaxf(F3, 0.0f), 1.0f);
-        		F4 = fminf(fmaxf(F4, 0.0f), 1.0f);
-
-
-
-			//actuators.timestamp = hrt_absolute_time();
-			//actuators.noutputs = 4;  // Specify the number of outputs (motors)
-			//actuators.output[0] = F1;  // Motor 1
-			//actuators.output[1] = F2;  // Motor 2
-			//actuators.output[2] = F3;  // Motor 3
-			//actuators.output[3] = F4;  // Motor 4
-			uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
-			actuator_motors_s actuator_motors;
-
-			orb_advert_t actuator_motors_pub = orb_advertise(ORB_ID(actuator_motors), &actuator_motors);
-
-			actuator_motors.timestamp = hrt_absolute_time();
-			actuator_motors.control[0] = F1;
-			actuator_motors.control[1] = F2;
-			actuator_motors.control[2] = F4;
-			actuator_motors.control[3] = F3;
-
-
-			//orb_publish(ORB_ID(actuator_outputs), actuator_pub, &actuators);
-        		px4_usleep(4); // Sleep for 10ms (adjust as needed)
-			orb_publish(ORB_ID(actuator_motors), actuator_motors_pub, &actuator_motors); // Publish the motor status
-
-			}*/
-
-			break;
-
-
-            	    }
-
-
-
-
-
-/*int _mag_sub = orb_subscribe(ORB_ID(sensor_mag));
-struct sensor_mag_s mag_data;
-
-if (orb_copy(ORB_ID(sensor_mag), _mag_sub, &mag_data) == PX4_OK) {
-    float x_mag = mag_data.x;
-    float y_mag = mag_data.y;
-    float z_mag = mag_data.z;
-
-    const float mag_threshold = 1.0f;
-
-    if (fabsf(x_mag) > mag_threshold || fabsf(y_mag) > mag_threshold || fabsf(z_mag) > mag_threshold) {
-        PX4_WARN("Magnetic field exceeds limits! x=%.2f, y=%.2f, z=%.2f", (double)x_mag, (double)y_mag, (double)z_mag);
-    }
-}
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-            // Convert quaternion to Euler angles
-            	        /*float q[4] = {vehicle_attitude.q[0], vehicle_attitude.q[1], vehicle_attitude.q[2], vehicle_attitude.q[3]};
-            	        float yaw = atan2(2.0f * (q[0] * q[1] + q[2] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]));
-            	        float pitch = asin(2.0f * (q[0] * q[2] - q[3] * q[1]));
-            	        float roll = atan2(2.0f * (q[0] * q[3] + q[1] * q[2]), 1.0f - 2.0f * (q[2] * q[2] + q[3] * q[3]));
-
-            // Convert to degrees
-            	        yaw = math::degrees(yaw);
-            	        pitch = math::degrees(pitch);
-            	        roll = math::degrees(roll);
-
-            // Check thresholds
-
-
-            	        if (fabs(yaw) > YAW_THRESHOLD) {
-            	            PX4_WARN("Yaw exceeded threshold: %.2f degrees", static_cast<double>(yaw));
-            	            break;
-            	        }
-            	        //yes = false;
-           	        if (fabs(pitch) > PITCH_THRESHOLD) {
-                	    PX4_WARN("Pitch exceeded threshold: %.2f degrees", static_cast<double>(pitch));
-            	        }
-            	        if (fabs(roll) > ROLL_THRESHOLD) {
-                	    PX4_WARN("Roll exceeded threshold: %.2f degrees", static_cast<double>(roll));
-
-            	        }*/
-
-        	   }
-
-        	   usleep(100000); // 100 ms delay
-
-    	     }
-
-
-
-    	      return 0;
-        }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-	/*if (!strcmp(argv[0], "takeoff")) {
-		// switch to takeoff mode and arm
-		uORB::SubscriptionData<vehicle_command_ack_s> vehicle_command_ack_sub{ORB_ID(vehicle_command_ack)};
-		send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_TAKEOFF);
-
-		if (wait_for_vehicle_command_reply(vehicle_command_s::VEHICLE_CMD_NAV_TAKEOFF, vehicle_command_ack_sub)) {
-			send_vehicle_command(vehicle_command_s::VEHICLE_CMD_COMPONENT_ARM_DISARM,
-					     static_cast<float>(vehicle_command_s::ARMING_ACTION_ARM),
-					     0.f);
-		}
-
-
-
-
-
-
-
-
-
-
-
-
-
-		uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
-        vehicle_attitude_s vehicle_attitude;
-
-        	if (vehicle_attitude_sub.update()) {
-           	    vehicle_attitude_sub.copy(&vehicle_attitude);
-            	    PX4_INFO("sdfgfwqerggt");
-            	// Convert quaternion to Euler angles (yaw, pitch, roll)
-           	     float q[4] = {vehicle_attitude.q[0], vehicle_attitude.q[1], vehicle_attitude.q[2], vehicle_attitude.q[3]};
-            	    float yaw = atan2(2.0f * (q[0] * q[1] + q[2] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]));
-            	    float pitch = asin(2.0f * (q[0] * q[2] - q[3] * q[1]));
-            	    float roll = atan2(2.0f * (q[0] * q[3] + q[1] * q[2]), 1.0f - 2.0f * (q[2] * q[2] + q[3] * q[3]));
-
-            	// Convert radians to degrees
-            	    yaw = math::degrees(yaw);
-            	    pitch = math::degrees(pitch);
-            	    roll = math::degrees(roll);
-
-            // Define thresholds
-                    const float YAW_THRESHOLD = 45.0f;   // example threshold in degrees
-            	    const float PITCH_THRESHOLD = 30.0f; // example threshold in degrees
-            	    const float ROLL_THRESHOLD = 30.0f;  // example threshold in degrees
-
-
-            	    if (fabs(yaw) > YAW_THRESHOLD) {
-            	        PX4_WARN("Yaw angle exceeded threshold: %.2f degrees", static_cast<double>(yaw));
-           	     }
-
-           	     if (fabs(pitch) > PITCH_THRESHOLD) {
-            	        PX4_WARN("Pitch angle exceeded threshold: %.2f degrees", static_cast<double>(pitch));
-           	     }
-
-           	     if (fabs(roll) > ROLL_THRESHOLD) {
-                    PX4_WARN("Roll angle exceeded threshold: %.2f degrees", static_cast<double>(roll));
-          	      }
-      	      }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/**************************************************************************************************************************************************/
 		return 0;
-	}*/
+	}
 
 	if (!strcmp(argv[0], "land")) {
 		send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_LAND);
@@ -1771,6 +895,17 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
 
 		_health_and_arming_checks.update(false, true);
 
+/**********************Commenting out the health failure check faisafe to prevent it from causing errors in arming**************************/
+
+		/*if (!_health_and_arming_checks.canArm(_vehicle_status.nav_state)) {
+			tune_negative(true);
+			mavlink_log_critical(&_mavlink_log_pub, "Arming denied: Resolve system health failures first\t");
+			events::send(events::ID("commander_arm_denied_resolve_failures"), {events::Log::Critical, events::LogInternal::Info},
+				     "Arming denied: Resolve system health failures first");
+			return TRANSITION_DENIED;
+		}*/
+	
+/**************************************************************************************************************************************** */
 
 	}
 

@@ -85,6 +85,20 @@
 #include <uORB/topics/vehicle_land_detected.h>
 #include <uORB/topics/vtol_vehicle_status.h>
 
+/************Included additional uROB messages**********************/
+
+#include <uORB/topics/failure_flag.h> 				//declared the custom uORB failure_flag
+#include <uORB/uORB.h>				 				//Includes the PX4 uORB messaging framework for subscribing and publishing data between modules.
+#include <uORB/topics/vehicle_angular_velocity.h>   //provides the angular velocity (roll, pitch, yaw rates) of the vehicle.
+#include <uORB/topics/vehicle_local_position.h>     //providing the local position and velocity of the vehicle.
+#include <uORB/topics/actuator_outputs.h> 			//includes the output values sent to actuators like motors or servos.
+#include <uORB/topics/actuator_motors.h> 			//handles motor-specific commands or outputs.
+#include <uORB/topics/vehicle_status.h> 			//contains the current state of the vehicle, like arming status, failure states, and mode.
+#include <uORB/topics/vehicle_rates_setpoint.h>
+#include <uORB/topics/actuator_controls_status.h> 	//uORB file to monitor the state and effectiveness of actuators in the UAV system.
+
+/*********************************************************************/
+
 using math::constrain;
 using systemlib::Hysteresis;
 
