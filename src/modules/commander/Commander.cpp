@@ -30,7 +30,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  ****************************************************************************/
-/*NEWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW*/
 /**
  * @file Commander.cpp
  *
@@ -86,9 +85,80 @@
 using namespace std;
 uORB::Publication<failure_flag_s> _failure_flag_pub{ORB_ID(failure_flag)}; //failure_flag msg file publisher
 
-/***************Functions and Mathematical Functions required for Fault Detection************************ */
+/**********************Functions and Mathematical Functions required for Fault Detection****************************/
 
-//The CompareResult struct holds error values and a flag, making it easy to return both from a function
+
+// Cross product of two vectors
+void cross_product(const double a[3], const double b[3], double result[3]) {
+    result[0] = a[1] * b[2] - a[2] * b[1];
+    result[1] = a[2] * b[0] - a[0] * b[2];
+    result[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+//Matrix Vector multiplication
+void mat_vec_mult(const double mat[3][3], const double vec[3], double result[3]) {
+    for (int i = 0; i < 3; ++i) {
+        result[i] = 0;
+        for (int j = 0; j < 3; ++j) {
+            result[i] += mat[i][j] * vec[j];
+        }
+    }
+}
+
+//Scalar Vector Multiplication
+void scalar_vec_mult(double scalar, const double vec[3], double result[3]) {
+    for (int i = 0; i < 3; ++i) {
+        result[i] = scalar * vec[i];
+    }
+}
+
+//Vector Subtraction
+void vec_sub(const double a[3], const double b[3], double result[3]) {
+    for (int i = 0; i < 3; ++i) {
+        result[i] = a[i] - b[i];
+    }
+}
+
+//Vector Addition
+void vec_add(const double a[3], const double b[3], double result[3]) {
+    for (int i = 0; i < 3; ++i) {
+        result[i] = a[i] + b[i];
+    }
+}
+
+//Diagonal Matrix Inversion
+void diag_mat_inv(const double mat[3][3], double inv[3][3]) {
+    for (int i = 0; i < 3; ++i) {
+        inv[i][i] = 1.0 / mat[i][i];
+        for (int j = 0; j < 3; ++j) {
+            if (i != j) {
+                inv[i][j] = 0.0;
+            }
+        }
+    }
+}
+
+// Predictive State Function - Predicts the state of the drone after the sampling time
+void predictive_state(const double w1[3], const double I[3][3], const double tao[3], double t, double result[3]) {
+    double I_inv[3][3];
+    diag_mat_inv(I, I_inv);
+
+    double mat_vec[3];
+    mat_vec_mult(I, w1, mat_vec);
+
+    double cross_res[3];
+    cross_product(w1, mat_vec, cross_res);
+
+    double difference[3];
+    vec_sub(tao, cross_res, difference);
+
+    double scaled_result[3];
+    mat_vec_mult(I_inv, difference, scaled_result);
+    scalar_vec_mult(t, scaled_result, scaled_result);
+
+    vec_add(w1, scaled_result, result);
+}
+
 struct CompareResult {
     double estimated_err[3];
     int flag;
@@ -102,86 +172,7 @@ struct CompareResult {
     }
 };
 
-// Cross Product
-void cross_product(const double a[3], const double b[3], double result[3]) {
-    result[0] = a[1] * b[2] - a[2] * b[1];
-    result[1] = a[2] * b[0] - a[0] * b[2];
-    result[2] = a[0] * b[1] - a[1] * b[0];
-}
-
-// Matrix-Vector Multiplication
-void mat_vec_mult(const double mat[3][3], const double vec[3], double result[3]) {
-    for (int i = 0; i < 3; ++i) {
-        result[i] = 0;
-        for (int j = 0; j < 3; ++j) {
-            result[i] += mat[i][j] * vec[j];
-        }
-    }
-}
-
-// Scalar-Vector Multiplication
-void scalar_vec_mult(double scalar, const double vec[3], double result[3]) {
-    for (int i = 0; i < 3; ++i) {
-        result[i] = scalar * vec[i];
-    }
-}
-
-// Vector Subtraction
-void vec_sub(const double a[3], const double b[3], double result[3]) {
-    for (int i = 0; i < 3; ++i) {
-        result[i] = a[i] - b[i];
-    }
-}
-
-// Vector Addition
-void vec_add(const double a[3], const double b[3], double result[3]) {
-    for (int i = 0; i < 3; ++i) {
-        result[i] = a[i] + b[i];
-    }
-}
-
-// Diagonal Matrix Inversion
-void diag_mat_inv(const double mat[3][3], double inv[3][3]) {
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            inv[i][j] = (i == j) ? 1.0 / mat[i][i] : 0.0;
-        }
-    }
-}
-
-// Predictive State Function
-void predictive_state(const double w1[3], const double I[3][3], const double tao[3], double t, double result[3]) {
-    double I_inv[3][3], cross_prod[3], temp[3], scaled_result[3];
-    diag_mat_inv(I, I_inv);
-    mat_vec_mult(I, w1, temp);
-    cross_product(w1, temp, cross_prod);
-    vec_sub(tao, cross_prod, temp);
-    mat_vec_mult(I_inv, temp, temp);
-    scalar_vec_mult(t, temp, scaled_result);
-    vec_add(w1, scaled_result, result);
-}
-
-// Compare Function
-int compare(double w0[3], const double w1[3], const double I[3][3], const double tao[3], const double thresh_error[3], double t, double estimated_err[3]) {
-    double w1p[3];
-    vec_sub(w0, w1, estimated_err);
-    predictive_state(w1, I, tao, t, w1p);
-    for (int i = 0; i < 3; ++i) {
-        w0[i] = w1p[i];
-    }
-    for (int i = 0; i < 3; ++i) {
-        if (std::abs(estimated_err[i]) > thresh_error[i]) {
-            return 1; // Flag indicating an error threshold breach
-        }
-    }
-    return 0; // Flag indicating no error threshold breach
-}
-
-// Constants
-const size_t windowSize = 50; // Fixed window size
-double signalBuffer[3][windowSize] = {{0.0}}; // 3D signal buffer
-size_t bufferIndex[3] = {0, 0, 0}; // Tracks the current index for each axis
-
+// Compare Function - Comapres and publishes the error between the predicted state of the drone and the actual state of the drone after the sampling time
 CompareResult compare(double w0[3], const double w1[3], const double I[3][3], const double tao[3], const double thresh_error[3], double t) {
     double estimated_err[3];
     vec_sub(w0, w1, estimated_err);
@@ -205,38 +196,45 @@ CompareResult compare(double w0[3], const double w1[3], const double I[3][3], co
     return result; // No error
 }
 
-// Fetch Real-Time Torques
-void get_real_time_torques(double result[3]) {
+//Retrieves real time torque values of roll, pitch and yaw of the drone
+double* get_real_time_torques() {
+    static double torques[3] = {0.0, 0.0, 0.0};
+
     uORB::SubscriptionData<actuator_controls_status_s> actuator_controls_status_sub{ORB_ID(actuator_controls_status_0)};
     actuator_controls_status_s actuator_controls_status;
 
+    // Check for updates
     if (actuator_controls_status_sub.update()) {
         actuator_controls_status_sub.copy(&actuator_controls_status);
 
+        // Get control power values
         double roll_power = actuator_controls_status.control_power[0];
         double pitch_power = actuator_controls_status.control_power[1];
         double yaw_power = actuator_controls_status.control_power[2];
 
-        result[0] = roll_power * 1.816;  // The value 1.816 represents the maximum torque that the motors can generate around the roll axes
-        result[1] = pitch_power * 1.816; // The value 1.816 represents the maximum torque that the motors can generate around the pitch axes
-        result[2] = yaw_power * 72.6;    // The value 72.6 represents the maximum torque that the motors can generate around the yaw axes
-    } else {
-        // If no update, return zeros
-        result[0] = 0.0;
-        result[1] = 0.0;
-        result[2] = 0.0;
+        // Map to real torques (adjust based on your drone's parameters)
+        torques[0] = roll_power * 1.816;   // Replace 1.0 with max roll torque
+        torques[1] = pitch_power * 1.816; // Replace 1.0 with max pitch torque
+        torques[2] = yaw_power * 72.6;    // Replace 1.0 with max yaw torque
     }
+
+    return torques;
 }
 
-// Fetch Signal Function - Store 50 samples
-void fetchSignal(const double newSignal[3]) {
+const size_t windowSize = 50;
+double signalBuffer[3][windowSize] = {0};
+size_t currentIndex[3] = {0};
+
+void fetchSignal(double* newSignal) {
+    uORB::SubscriptionData<sensor_combined_s> sensor_data{ORB_ID(sensor_combined)};
+    sensor_data.update();
+
     for (size_t i = 0; i < 3; ++i) {
-        signalBuffer[i][bufferIndex[i]] = newSignal[i];
-        bufferIndex[i] = (bufferIndex[i] + 1) % windowSize; // Circular buffer
+        signalBuffer[i][currentIndex[i] % windowSize] = sensor_data.get().gyro_rad[i];
+        currentIndex[i] = (currentIndex[i] + 1) % windowSize;
     }
 }
 
-// Calculate Moving Mean Function
 void calculateMovingMean(double movingMean[3]) {
     for (size_t i = 0; i < 3; ++i) {
         double sum = 0.0;
@@ -247,58 +245,59 @@ void calculateMovingMean(double movingMean[3]) {
     }
 }
 
-// Compute Noise Standard Deviation Function
 void computeNoiseSD(double noiseSD[3]) {
     double movingMean[3];
     calculateMovingMean(movingMean);
+
     for (size_t i = 0; i < 3; ++i) {
         double sumSquared = 0.0;
         for (size_t j = 0; j < windowSize; ++j) {
             double noiseOnly = signalBuffer[i][j] - movingMean[i];
             sumSquared += noiseOnly * noiseOnly;
         }
-        noiseSD[i] = std::sqrt(sumSquared / (windowSize - 1)); // Use std::sqrt explicitly
+		noiseSD[i] = std::sqrt(static_cast<double>(sumSquared) / static_cast<double>(windowSize - 1));
     }
 }
 
 // Faulty Motor Function - Detects the failed motor number on the basis of instantaneous estimated error sign convention for faulty motor
-void faulty_motor(const double arr[3]) {
-    failure_flag_s failure_msg; // Instance for failsafe_flag
+void faulty_motor(const double* arr) {
+    failure_flag_s failure_msg; // An instance for failsafe_flag
 
-    // Initializes the failsafe messages with default values of No Failure detected
-    failure_msg.timestamp = hrt_absolute_time();  // Current time in microseconds
-    failure_msg.failure_detected = false;         // Initially assumes no failure
-    failure_msg.failed_motor_index = -1;          // No failure
-    failure_msg.failure_type = 0;                 // Default: no failure
+    // Initialize the failsafe message with default values
+    failure_msg.failure_detected = false;          // Initially assume no failure
+    failure_msg.failed_motor_index = -1;           // No failure
+    failure_msg.failure_type = 0;                   // Default: no failure
 
     if (arr[0] < 0 && arr[1] > 0 && arr[2] > 0) {
         PX4_WARN("Fault in 1st motor");
-        failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 0;       // 1st motor failed
+		failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 0;  // 1st motor failed
         failure_msg.failure_type = 1; 
     } else if (arr[0] > 0 && arr[1] < 0 && arr[2] > 0) {
         PX4_WARN("Fault in 2nd motor");
-        failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 1;       // 2nd motor failed
+		failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 1;  // 2nd motor failed
         failure_msg.failure_type = 1;
     } else if (arr[0] > 0 && arr[1] > 0 && arr[2] < 0) {
         PX4_WARN("Fault in 3rd motor");
-        failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 2;       // 3rd motor failed
+		failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 2;  // 3rd motor failed
         failure_msg.failure_type = 1;
-    } else if (arr[0] < 0 && arr[1] < 0 && arr[2] < 0) {
-        PX4_WARN("Fault in 4th motor");
-        failure_msg.failure_detected = true;
-        failure_msg.failed_motor_index = 3;       // 4th motor failed
-        failure_msg.failure_type = 1;
+	} else if (arr[0] < 0 && arr[1] < 0 && arr[2] < 0) {
+		PX4_WARN("Fault in 4th motor");
+		failure_msg.failure_detected = true;
+        failure_msg.failed_motor_index = 3;  // 4th motor failed
+        failure_msg.failure_type = 1; 
     }
-
-    // Message to be published in the failure_flag uORB file after detecting the fault
-    if (failure_msg.failure_detected) {
+	// Message to be published in the failure_flag uROB file after detecting the fault
+	if (failure_msg.failure_detected) {
         _failure_flag_pub.publish(failure_msg);
-    }
+        //PX4_INFO("Motor failure detection time : %lu", hrt_absolute_time());
+	}
 }
+
 /***************************************************************************************************************/
+
 typedef enum VEHICLE_MODE_FLAG {
 	VEHICLE_MODE_FLAG_CUSTOM_MODE_ENABLED  = 1,   /* 0b00000001 Reserved for future use. | */
 	VEHICLE_MODE_FLAG_TEST_ENABLED         = 2,   /* 0b00000010 system has a test mode enabled. This flag is intended for temporary system tests and should not be used for stable implementations. | */
@@ -570,80 +569,76 @@ int Commander::custom_command(int argc, char *argv[])
 
 /*******************************************Code for Motor Failure Detection Starts**********************************************************/
 
-			// Subscribing to the uORB files of interest
-			/*uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
-			uORB::SubscriptionData<vehicle_angular_velocity_s> vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
-			uORB::SubscriptionData<vehicle_local_position_s> vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
+			// Subscribing to the uORB files of our interest
+    	    uORB::SubscriptionData<vehicle_attitude_s> vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+    	    uORB::SubscriptionData<vehicle_angular_velocity_s> vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
+    	    uORB::SubscriptionData<vehicle_local_position_s> vehicle_local_position_sub{ORB_ID(vehicle_local_position)};
 
-			double w0[3] = {0.0, 0.0, 0.0}; // Initial predictive state of roll, pitch, and yaw
-			// Inertia matrix of IRIS drone (from the model file)
+			double w0[3] = {0, 0, 0}; // Initialize predictive state
+            // Specifying Inertia matrix of IRIS Drone which is taken from the model file of IRIS
 			double I[3][3] = {
-				{0.029125, 0.0, 0.0}, 
-				{0.0, 0.029125, 0.0}, 
-				{0.0, 0.0, 0.055225}
+				{0.029125, 0, 0}, 
+				{0, 0.029125, 0}, 
+				{0, 0, 0.055225}
 			};
-			double thres_err[3] = {0.5, 0.5, 1.0}; // Base threshold errors
-			double t = 0.005; // Sampling time of IMU
+	    	double thres_err[3] = {0.1, 0.1, 0.2};  // Base threshold errors
+		    double t = 0.005; //sampling time of IMU
 
-   	    	while (true) {
-       			if (vehicle_attitude_sub.update() && vehicle_angular_velocity_sub.update()) {
-           	    	vehicle_attitude_s vehicle_attitude;
-           	    	vehicle_angular_velocity_s vehicle_angular_velocity;
-           	    	vehicle_attitude_sub.copy(&vehicle_attitude);
-           	    	vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity);
-                   
-					double tao[3];
+    	    while (true) {
+        		if (vehicle_attitude_sub.update() && vehicle_angular_velocity_sub.update()) {
+            	    vehicle_attitude_s vehicle_attitude;
+            	    vehicle_angular_velocity_s vehicle_angular_velocity;
 
-					get_real_time_torques(tao); // Assuming `get_real_time_torques` is adapted to populate raw arrays
+            	    vehicle_attitude_sub.copy(&vehicle_attitude);
+            	    vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity);
+				    double tao[3] = {0}; 
 
-					double w1[3] = {
+		    		double w1[3] = {
 						vehicle_angular_velocity.xyz[0],
 						vehicle_angular_velocity.xyz[1],
 						vehicle_angular_velocity.xyz[2]
 					};
 
-	 				for (int t1 = 0; t1 < 100; ++t1) {
-						double newSignal[3][1] = {
-							{std::sin(0.1 * t1)}, // Simulating 3x1 signal
-							{std::sin(0.2 * t1)},
-							{std::sin(0.3 * t1)}
-       					};
+				    const double alpha[3] = {0.02, 0.02, 0.04};  // Sensitivity factor
 
-			 			// Fetching signal
-       					double flattenedSignal[3];
-						for (int i = 0; i < 3; ++i) {
-						flattenedSignal[i] = newSignal[i][0];
-						}
+					// Fetching signal
+		 			for (int t1 = 0; t1 < 100; ++t1) {
+        			// Simulate a 3x1 signal
+        			double newSignal[3] = {
+            			std::sin(0.1 * t1),
+            			std::sin(0.2 * t1),
+            			std::sin(0.3 * t1)
+        			};
 
-						fetchSignal(flattenedSignal); // Adapt `fetchSignal` to accept raw arrays
+        			// Fetch the signal
+        			fetchSignal(newSignal);
 
-       					// Compute noise standard deviation once we have enough data which is n-1, where n is the window size
-       					if (t1 >= 49) {
-           					double sigma[3];
-							computeNoiseSD(sigma);  // Call without assigning return value
-							double alpha[3] = {0.2, 0.2, 0.4}; // Sensitivity factor
-							for (size_t i = 0; i < 3; ++i) {
-								thres_err[i] = alpha[i] * sigma[i] + thres_err[i]; // Calculating dynamic threshold error
-							}
-						}
-					}
+        			// Compute noise standard deviation once we have enough data
+        				if (t1 >= 49) {
+            				double sigma[3];
+            				computeNoiseSD(sigma);
 
-					CompareResult result = compare(w0, w1, I, tao, thres_err, t); // Adapt `compare` for raw arrays
-					double* estimated_err = result.estimated_err;
-					int flag = result.flag;
-
-					if (flag == 1) {
-							faulty_motor(estimated_err); // Detects and sends the failure detected message to find the failed motor
-							break;
+            				// Calculate dynamic threshold error
+            				for (size_t i = 0; i < 3; ++i) {
+            				    thres_err[i] = alpha[i] * sigma[i] + thres_err[i]; // Calculating dynamic threshold error
+            				}
+        				}
+   					}
+					CompareResult result = compare(w0, w1, I, tao, thres_err, t);
+            		double* estimated_err = result.estimated_err; //first return value of compare function which is the estimated error
+            		int flag = result.flag; //second return value of compare function which changes the value of flag as soon as the fault is detected
+            		if (flag==1) {
+                		faulty_motor(estimated_err); //detects and sends the failure detected message to find the failed motor
+						break;
 					}
 				}
-			
-			usleep(100000); // 100 ms delay
+				usleep(100000); // 100 ms delay
+    	    }
 
-			}*/
 /**************************************************************************************************************************************************/
-		return 0;
-	}
+
+    	    return 0;
+        }
 
 	if (!strcmp(argv[0], "land")) {
 		send_vehicle_command(vehicle_command_s::VEHICLE_CMD_NAV_LAND);
@@ -895,8 +890,7 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
 
 		_health_and_arming_checks.update(false, true);
 
-/**********************Commenting out the health failure check faisafe to prevent it from causing errors in arming**************************/
-
+//Commenting out the health failure check faisafe to prevent it from causing errors in arming
 		/*if (!_health_and_arming_checks.canArm(_vehicle_status.nav_state)) {
 			tune_negative(true);
 			mavlink_log_critical(&_mavlink_log_pub, "Arming denied: Resolve system health failures first\t");
@@ -904,9 +898,6 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
 				     "Arming denied: Resolve system health failures first");
 			return TRANSITION_DENIED;
 		}*/
-	
-/**************************************************************************************************************************************** */
-
 	}
 
 	_vehicle_status.armed_time = hrt_absolute_time();

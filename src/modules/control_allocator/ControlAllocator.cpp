@@ -62,7 +62,7 @@ using namespace time_literals;
 
 using namespace std;
 
-/**************Initiallizing Variables for failure_flag msg file**************/
+/**************Initiallizing Variables for miclag msg file**************/
 
 bool fail_change;
 int faillM_indx;
@@ -681,7 +681,7 @@ ControlAllocator::publish_control_allocator_status(int matrix_index)
 
 	_control_allocator_status_pub[matrix_index].publish(control_allocator_status);
 }
-/******Function to update the failure status in the failure_flag uROB file******/
+/******Function to update the failure status in the miclag uROB file******/
 
 void ControlAllocator::updateFailureStatus()
 {
@@ -732,7 +732,7 @@ ControlAllocator::publish_actuator_controls()
 
 /*****************************************************************Discrete Fault Injection*****************************************************************/
 
-/*
+
 	static constexpr float failure_time_seconds = 30.0f; // Time in seconds after which motor failure occurs
 	static bool motor_idx_failed = false;
 
@@ -747,7 +747,7 @@ ControlAllocator::publish_actuator_controls()
 	if (!motor_idx_failed && elapsed_time >= failure_time_seconds) {
     	motor_idx_failed = true; // Trigger motor failure
 		PX4_WARN("Motor failure injected");
-		//PX4_INFO("Failure injection time: %lu microseconds", hrt_absolute_time());
+		//PX4_WARN("Failure Injection Time : %lu ", hrt_absolute_time());
 	}
 
 	updateFailureStatus(); // Updating the failure in the function above 
@@ -760,7 +760,6 @@ ControlAllocator::publish_actuator_controls()
 
 
 		if (motor_idx_failed && motors_idx == 0) { // running the if loop when motor_idx_failed becomes true. Here we can change the motors_idx from 0 to 1,2 or 3 to simulate any other motor
-			PX4_WARN("Motor failure injected");
     	    actuator_motors.control[motors_idx] = 0.0f; // setting the motor's effectiveness to 0. It ranges from 0 to 1 which is 0% to 100% effectiveness
 		}
 		else {
@@ -774,12 +773,12 @@ ControlAllocator::publish_actuator_controls()
 		//	actuator_motors.control[motors_idx] = NAN;  //Commenting any code that could trigger failsafe or create problem in simulating motor failure
 		//}												//Commenting any code that could trigger failsafe or create problem in simulating motor failure
 	}
-*/
+
 /*******************************************************************************************************************************************************/
 
 
 /*****************************************************************Linear Fault Injection*****************************************************************/
-
+/*
 	static bool motor_idx_failed = false;
 	static uint64_t motor_failure_start_time = 0; // Store the time when failure starts
 
@@ -801,7 +800,7 @@ ControlAllocator::publish_actuator_controls()
 	    motor_idx_failed = true; // Trigger motor failure
 	    motor_failure_start_time = hrt_absolute_time(); // Record the start time of the failure
 		PX4_WARN("Motor failure injected");
-	    //PX4_INFO("Failure injection time: %lu microseconds", hrt_absolute_time());
+		PX4_WARN("Failure Injection Time : %lu ", hrt_absolute_time());
 	}
 
 	updateFailureStatus(); // Updating the failure in the function above
@@ -837,7 +836,7 @@ ControlAllocator::publish_actuator_controls()
 	    ++actuator_idx;
 	}
 
-
+*/
 
 /*******************************************************************************************************************************************************/
 
